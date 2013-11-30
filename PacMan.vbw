@@ -1,0 +1,4 @@
+frmPacMan = -3, 0, 754, 548, C, 22, 4, 774, 784, C
+basSetUp = 66, 87, 701, 543, C
+basPacman = 154, 203, 789, 659, C
+basGhostAI = 22, 29, 657, 485, C
