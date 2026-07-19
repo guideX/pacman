@@ -1,0 +1,23 @@
+{
+  "wallpaper": "",
+  "desktop.wallpaper.id": "",
+  "desktop.theme.id": "classic",
+  "desktop.background.scale": "fill",
+  "desktop.taskbar.position": "bottom",
+  "desktop.clock.timeZoneId": "pacific",
+  "desktop.clock.use24HourTime": false,
+  "pinned": ["App Model Demo","Native App Debug Viewer","Hello World","Resource Viewer","Nexgen PacMan"],
+  "recent": [],
+  "desktopShortcuts": [
+  ],
+  "showDesktopTrash": true,
+  "showDesktopThisSystem": true,
+  "showDesktopFileManager": true,
+  "showDesktopSystemSettings": false,
+  "smallLiveDesktopFolderIcons": true,
+  "autoArrangeDesktopIcons": false,
+  "windows": [
+  ],
+  "iconPositions": [
+  ]
+}
