@@ -1,55 +1,30 @@
 #include "renderer.h"
 
+#include "game.h"
+#include "level.h"
+
 namespace {
 
-static const char* kMaze[kPacManMazeRows] = {
-    "WWWWWWWWWWWWWWWWWWWWWWWWWWWW",
-    "W............WW............W",
-    "W.WWWW.WWWWW.WW.WWWWW.WWWW.W",
-    "WoWWWW.WWWWW.WW.WWWWW.WWWWoW",
-    "W.WWWW.WWWWW.WW.WWWWW.WWWW.W",
-    "W..........................W",
-    "W.WWWW.WW.WWWWWWWW.WW.WWWW.W",
-    "W.WWWW.WW.WWWWWWWW.WW.WWWW.W",
-    "W......WW....WW....WW......W",
-    "WWWWWW.WWWWW WW WWWWW.WWWWWW",
-    "     W.WWWWW WW WWWWW.W     ",
-    "     W.WW          WW.W     ",
-    "     W.WW WWWWWWWW WW.W     ",
-    "WWWWWW.WW W      W WW.WWWWWW",
-    "      .   W      W   .      ",
-    "WWWWWW.WW W      W WW.WWWWWW",
-    "     W.WW WWWWWWWW WW.W     ",
-    "     W.WW          WW.W     ",
-    "     W.WW WWWWWWWW WW.W     ",
-    "WWWWWW.WW WWWWWWWW WW.WWWWWW",
-    "W............WW............W",
-    "W.WWWW.WWWWW.WW.WWWWW.WWWW.W",
-    "W.WWWW.WWWWW.WW.WWWWW.WWWW.W",
-    "Wo..WW.......  .......WW..oW",
-    "WWW.WW.WW.WWWWWWWW.WW.WW.WWW",
-    "WWW.WW.WW.WWWWWWWW.WW.WW.WWW",
-    "W......WW....WW....WW......W",
-    "W.WWWWWWWWWW.WW.WWWWWWWWWW.W",
-    "W.WWWWWWWWWW.WW.WWWWWWWWWW.W",
-    "W..........................W",
-    "WWWWWWWWWWWWWWWWWWWWWWWWWWWW"
-};
-
 static uint32_t* pixel(uint32_t* frame, int x, int y) {
-    if (x < 0 || x >= kPacManWidth || y < 0 || y >= kPacManFrameHeight) return 0;
+    if (!frame || x < 0 || x >= kPacManWidth || y < 0 || y >= kPacManFrameHeight) return 0;
     return frame + y * kPacManWidth + x;
 }
 
 static void fill(uint32_t* frame, uint32_t color) {
+    if (!frame) return;
     for (uint32_t i = 0; i < static_cast<uint32_t>(kPacManWidth * kPacManFrameHeight); ++i) frame[i] = color;
 }
 
+static void copy_pixels(const uint32_t* source, uint32_t* destination) {
+    if (!source || !destination) return;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(kPacManWidth * kPacManFrameHeight); ++i) destination[i] = source[i];
+}
+
 static void copy_level(const PacImage* level, uint32_t* frame) {
-    for (uint32_t y = 0; y < level->height && y < kPacManMazeHeight; ++y) {
+    for (uint32_t y = 0; y < kPacManMazeHeight; ++y) {
         const uint32_t* source = level->pixels + y * (level->strideBytes / 4u);
         uint32_t* destination = frame + (y + 32u) * kPacManWidth;
-        for (uint32_t x = 0; x < level->width && x < kPacManWidth; ++x) destination[x] = source[x];
+        for (uint32_t x = 0; x < kPacManWidth; ++x) destination[x] = source[x];
     }
 }
 
@@ -65,24 +40,29 @@ static void pill(uint32_t* frame, int centerX, int centerY, int radius, uint32_t
 }
 
 static void draw_pills(uint32_t* frame) {
-    for (int y = 1; y <= 29; ++y) {
-        for (int x = 1; x <= 26; ++x) {
-            const char tile = kMaze[y][x];
-            if (tile == '.') pill(frame, x * 16 + 8, y * 16 + 8, 2, 0x00FFC8A0u);
-            if (tile == 'o') pill(frame, x * 16 + 8, y * 16 + 8, 6, 0x00FFFFFFu);
+    for (int y = 0; y < kPacManMazeRows; ++y) {
+        for (int x = 0; x < kPacManMazeColumns; ++x) {
+            const char tile = level_tile(x, y);
+            if (tile == '.') pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 2, 0x00FFC8A0u);
+            if (tile == 'o') pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 6, 0x00FFFFFFu);
         }
     }
 }
 
-static void draw_sprite(const PacImage* sprites, uint32_t* frame, int destinationX, int destinationY, int sourceX, int sourceY, int maskX) {
+static void draw_sprite(const PacImage* sprites, uint32_t* frame, int destinationX, int destinationY,
+                        int sourceX, int sourceY, int maskX) {
+    if (!sprites || !sprites->pixels || sprites->width > 0xFFFFFFFFu / 4u ||
+        sprites->strideBytes < sprites->width * 4u) return;
+    const uint32_t sourceStride = sprites->strideBytes / 4u;
     for (int y = 0; y < kPacManSpriteSize; ++y) {
         for (int x = 0; x < kPacManSpriteSize; ++x) {
             const int sx = sourceX + x;
             const int sy = sourceY + y;
             const int mx = maskX + x;
-            if (sx < 0 || sy < 0 || mx < 0 || sx >= static_cast<int>(sprites->width) || mx >= static_cast<int>(sprites->width) || sy >= static_cast<int>(sprites->height)) continue;
-            const uint32_t source = sprites->pixels[sy * (sprites->strideBytes / 4u) + sx];
-            const uint32_t mask = sprites->pixels[sy * (sprites->strideBytes / 4u) + mx];
+            if (sx < 0 || sy < 0 || mx < 0 || sx >= static_cast<int>(sprites->width) ||
+                mx >= static_cast<int>(sprites->width) || sy >= static_cast<int>(sprites->height)) continue;
+            const uint32_t source = sprites->pixels[sy * sourceStride + sx];
+            const uint32_t mask = sprites->pixels[sy * sourceStride + mx];
             uint32_t* target = pixel(frame, destinationX + x, 32 + destinationY + y);
             if (target) *target = (*target & mask) | source;
         }
@@ -99,18 +79,21 @@ static const char* glyph(char c) {
     case '-': return "00000 00000 00000 11111 00000 00000 00000";
     case 'A': return "01110 10001 10001 11111 10001 10001 10001";
     case 'C': return "01110 10001 10000 10000 10000 10001 01110";
+    case 'D': return "11110 10001 10001 10001 10001 10001 11110";
     case 'E': return "11111 10000 10000 11110 10000 10000 11111";
     case 'G': return "01110 10001 10000 10111 10001 10001 01110";
     case 'H': return "10001 10001 10001 11111 10001 10001 10001";
     case 'I': return "11111 00100 00100 00100 00100 00100 11111";
     case 'M': return "10001 11011 10101 10101 10001 10001 10001";
     case 'N': return "10001 11001 10101 10011 10001 10001 10001";
+    case 'O': return "01110 10001 10001 10001 10001 10001 01110";
     case 'P': return "11110 10001 10001 11110 10000 10000 10000";
+    case 'R': return "11110 10001 10001 11110 10100 10010 10001";
     case 'S': return "01111 10000 10000 01110 00001 00001 11110";
     case 'T': return "11111 00100 00100 00100 00100 00100 00100";
-    case 'X': return "10001 10001 01010 00100 01010 10001 10001";
     case 'V': return "10001 10001 10001 10001 01010 01010 00100";
-    case 'K': return "10001 10010 10100 11000 10100 10010 10001";
+    case 'W': return "10001 10001 10001 10101 10101 11011 10001";
+    case 'X': return "10001 10001 01010 00100 01010 10001 10001";
     default: return "00000 00000 00000 00000 00000 00000 00000";
     }
 }
@@ -136,24 +119,52 @@ static void draw_text(uint32_t* frame, int x, int y, const char* text, uint32_t 
     }
 }
 
+static bool valid_frame(uint32_t* framePixels, uint32_t framePixelCount) {
+    const uint32_t requiredPixels = static_cast<uint32_t>(kPacManWidth * kPacManFrameHeight);
+    return framePixels && framePixelCount >= requiredPixels;
+}
+
+}
+
+bool build_background_frame(const PacImage* level, uint32_t* backgroundPixels, uint32_t framePixelCount) {
+    if (!level || !level->pixels || !valid_frame(backgroundPixels, framePixelCount) ||
+        level->width != kPacManWidth || level->height < kPacManMazeHeight ||
+        level->width > 0xFFFFFFFFu / 4u || level->strideBytes < level->width * 4u) return false;
+
+    fill(backgroundPixels, 0x00000000u);
+    copy_level(level, backgroundPixels);
+    draw_pills(backgroundPixels);
+    draw_text(backgroundPixels, 10, 10, "SCORE: 0", 0x00FFFFFFu, 1);
+    draw_text(backgroundPixels, 290, 10, "HI SCORE: 10000", 0x00FFFFFFu, 1);
+    draw_text(backgroundPixels, 80, 536, "ARROWS MOVE - ESC TO EXIT", 0x00FFFFFFu, 1);
+    return true;
+}
+
+bool render_game_scene(const PacImage* sprites, const GameState* game, const uint32_t* backgroundPixels,
+                       uint32_t* framePixels, uint32_t framePixelCount) {
+    const uint32_t requiredPixels = static_cast<uint32_t>(kPacManWidth * kPacManFrameHeight);
+    if (!sprites || !sprites->pixels || !game || !backgroundPixels || !valid_frame(framePixels, framePixelCount) ||
+        sprites->width < 256 || sprites->height < 352 || sprites->width > 0xFFFFFFFFu / 4u ||
+        sprites->strideBytes < sprites->width * 4u) return false;
+
+    copy_pixels(backgroundPixels, framePixels);
+    int mouthFrame = game->pacman.mouth;
+    if (mouthFrame < 1 || mouthFrame > 3) mouthFrame = 3;
+    const int sourceX = static_cast<int>(game->pacman.facingDirection) * kPacManSpriteSize;
+    const int sourceY = 128 + mouthFrame * kPacManSpriteSize;
+    if (game->pacman.facingDirection != Direction::None) {
+        draw_sprite(sprites, framePixels, game->pacman.x - 16, game->pacman.y - 16,
+                    sourceX, sourceY, sourceX + 128);
+    }
+    (void)requiredPixels;
+    return true;
 }
 
 bool render_static_scene(const PacImage* level, const PacImage* sprites, uint32_t* framePixels, uint32_t framePixelCount) {
-    if (!level || !sprites || !framePixels || framePixelCount < static_cast<uint32_t>(kPacManWidth * kPacManFrameHeight) ||
-        level->width != kPacManWidth || level->height < kPacManMazeHeight || sprites->width < 256 || sprites->height < 352) return false;
-
-    fill(framePixels, 0x00000000u);
-    copy_level(level, framePixels);
-    draw_pills(framePixels);
-
-    draw_sprite(sprites, framePixels, 208, 360, 96, 224, 224);
-    draw_sprite(sprites, framePixels, 208, 168, 0, 0, 192);
-    draw_sprite(sprites, framePixels, 176, 208, 32, 0, 192);
-    draw_sprite(sprites, framePixels, 208, 224, 64, 0, 192);
-    draw_sprite(sprites, framePixels, 240, 208, 96, 0, 192);
-
-    draw_text(framePixels, 10, 10, "SCORE: 0", 0x00FFFFFFu, 1);
-    draw_text(framePixels, 290, 10, "HI SCORE: 10000", 0x00FFFFFFu, 1);
-    draw_text(framePixels, 62, 536, "NEXGEN PACMAN - STATIC PREVIEW - ESC TO EXIT", 0x00FFFFFFu, 1);
-    return true;
+    if (!level || !sprites || !valid_frame(framePixels, framePixelCount)) return false;
+    static uint32_t backgroundPixels[kPacManWidth * kPacManFrameHeight];
+    GameState game{};
+    game_initialize(&game);
+    return build_background_frame(level, backgroundPixels, framePixelCount) &&
+        render_game_scene(sprites, &game, backgroundPixels, framePixels, framePixelCount);
 }

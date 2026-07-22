@@ -41,8 +41,13 @@ bool load_gximg(gx_app_context* ctx, const char* path, uint32_t* destination, ui
     const uint32_t strideBytes = read_u32(header + 16);
     const uint32_t pixelFormat = read_u32(header + 20);
     const uint32_t payloadBytes = read_u32(header + 24);
-    if (version != kGximgVersion || pixelFormat != kXrgb8888 || width == 0 || height == 0 || strideBytes != width * 4u ||
-        payloadBytes != strideBytes * height || width * height > capacityPixels) return false;
+    const uint64_t expectedStride = static_cast<uint64_t>(width) * 4u;
+    const uint64_t expectedPayload = expectedStride * static_cast<uint64_t>(height);
+    const uint64_t pixelCount = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    if (version != kGximgVersion || pixelFormat != kXrgb8888 || width == 0 || height == 0 ||
+        expectedStride > 0xFFFFFFFFull || expectedPayload > 0xFFFFFFFFull ||
+        strideBytes != static_cast<uint32_t>(expectedStride) || payloadBytes != static_cast<uint32_t>(expectedPayload) ||
+        pixelCount > capacityPixels) return false;
 
     if (!read_exact(ctx, path, kGximgHeaderBytes, destination, payloadBytes)) return false;
     outImage->width = width;

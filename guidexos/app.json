@@ -4,7 +4,7 @@
   "displayName": "Nexgen PacMan",
   "version": "0.1.0",
   "publisher": "Team Nexgen / guideXOS",
-  "description": "Static guideXOS Native ELF rendering milestone for the historical Nexgen PacMan game.",
+  "description": "Interactive guideXOS Native ELF PacMan movement milestone for the historical Nexgen PacMan game.",
   "category": "Games",
   "kind": "NativeElf",
   "icon": "",

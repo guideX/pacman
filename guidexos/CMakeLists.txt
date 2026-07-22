@@ -28,19 +28,31 @@ endif()
 set(GUIDEXOS_BUILD_OBJ_DIR "${CMAKE_CURRENT_BINARY_DIR}/native-objects")
 set(GUIDEXOS_ELF "${GUIDEXOS_LOCAL_BIN_DIR}/pacman.elf")
 set(GUIDEXOS_MAIN_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/main.o")
+set(GUIDEXOS_GAME_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/game.o")
+set(GUIDEXOS_LEVEL_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/level.o")
 set(GUIDEXOS_RENDERER_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/renderer.o")
 set(GUIDEXOS_LOADER_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/bitmap_loader.o")
-set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_RENDERER_OBJECT}" "${GUIDEXOS_LOADER_OBJECT}")
+set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUIDEXOS_LEVEL_OBJECT}" "${GUIDEXOS_RENDERER_OBJECT}" "${GUIDEXOS_LOADER_OBJECT}")
 
 add_custom_command(OUTPUT "${GUIDEXOS_MAIN_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
-    DEPENDS src/main.cpp src/game_types.h src/bitmap_loader.h src/renderer.h
+    DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/bitmap_loader.h src/renderer.h
+)
+add_custom_command(OUTPUT "${GUIDEXOS_GAME_OBJECT}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/game.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_GAME_OBJECT}"
+    DEPENDS src/game.cpp src/game.h src/game_state.h src/level.h src/game_types.h
+)
+add_custom_command(OUTPUT "${GUIDEXOS_LEVEL_OBJECT}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/level.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LEVEL_OBJECT}"
+    DEPENDS src/level.cpp src/level.h src/game_state.h src/game_types.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_RENDERER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/renderer.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_RENDERER_OBJECT}"
-    DEPENDS src/renderer.cpp src/game_types.h src/renderer.h
+    DEPENDS src/renderer.cpp src/game_types.h src/game_state.h src/renderer.h src/level.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_LOADER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
@@ -54,6 +66,10 @@ add_custom_command(OUTPUT "${GUIDEXOS_ELF}"
     COMMENT "Linking genuine static amd64 Native ELF"
 )
 add_custom_target(pacman-native ALL DEPENDS "${GUIDEXOS_ELF}")
+
+add_executable(pacman-game-tests tests/game_logic_test.cpp src/game.cpp src/level.cpp)
+target_include_directories(pacman-game-tests PRIVATE "${GUIDEXOS_SDK_ROOT}/include" "${GUIDEXOS_APP_ROOT}/src")
+set_target_properties(pacman-game-tests PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 
 add_custom_command(TARGET pacman-native POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_STAGED_APP_DIR}/bin/${GUIDEXOS_APP_ARCH}"

@@ -27,6 +27,9 @@ guidexos/
   README.md
   src/
     main.cpp
+    game_state.h
+    game.cpp / game.h
+    level.cpp / level.h
     renderer.cpp
     renderer.h
     bitmap_loader.cpp
@@ -63,6 +66,7 @@ The existing `guidexos-c-abi-v1` table keeps its original member order and appen
 - `request_window_ex(..., flags, ...)`, with `GX_WINDOW_FLAG_FIXED_SIZE` for non-resizable windows.
 - `file_read(..., offset, ...)`, which reads sequential chunks up to 64 KiB so package resources larger than `file_read_all` can be streamed safely.
 - `present_frame(...)`, which copies a complete XRGB8888 frame into compositor-owned storage.
+- `get_ticks_ms(...)`, which returns monotonic milliseconds from a hosted process-local epoch. The `uint64_t` value wraps after 2^64 milliseconds.
 
 Frame ownership is explicit: the app owns the input buffer and may reuse it after `present_frame` returns; the host copies the bytes before returning. The current supported format is `GX_PIXEL_FORMAT_XRGB8888`, with a `0x00RRGGBB` word per pixel, a caller-provided byte stride, and a 16 MiB host frame cap. The compositor retains one surface per window and replaces it on later presentations, so repaint handling does not append unbounded draw objects.
 
@@ -95,4 +99,4 @@ desktop.launch Nexgen PacMan
 
 ## Current limitations and next milestone
 
-This milestone is static only: no movement, timers, ghost AI, collision handling, scoring, credits, two-player mode, sound, high scores, gamepads, fullscreen, or bare-metal Native ELF execution. Only the hosted amd64 experimental executor is supported. In the current live server worktree, manifest discovery, ELF validation, image loading, and runtime preparation pass, but valid Native ELF package-file calls abort before the app can present its frame; the hosted Navigator worktree also currently prevents rebuilding the experimental server because `CssDiagnostics::runtimeFocusRecomputations` is referenced but absent. Therefore this cycle is classified as outcome B, not a successful scene launch. The next recommended cycle is to fix that host file-call/runtime bookkeeping boundary, rerun the retained-frame smoke test, and then add a small app-side retained game state with monotonic timing and keyboard direction events. Audio should remain a separate later platform slice.
+The interactive movement milestone now supports Pac-Man-only movement under the arrow keys, fixed-step simulation, buffered turns, wall blocking, historical reversal-at-alignment behavior, sprite animation, and both horizontal tunnel directions. Static demonstration ghosts are removed from the active scene so they cannot imply collision behavior. Focus loss clears held directions and stops movement; new input is required after focus returns. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is pill and power-pill consumption, score updates, remaining-pill accounting, and level-completion detection. Do not add ghosts or sound until separately requested.

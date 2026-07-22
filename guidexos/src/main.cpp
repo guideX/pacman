@@ -1,6 +1,7 @@
 #include <guidexos/ui.h>
 
 #include "bitmap_loader.h"
+#include "game.h"
 #include "game_types.h"
 #include "renderer.h"
 
@@ -14,7 +15,13 @@ namespace {
 
 static uint32_t g_levelPixels[kPacManWidth * kPacManMazeHeight];
 static uint32_t g_spritePixels[256 * 352];
+static uint32_t g_backgroundPixels[kPacManWidth * kPacManFrameHeight];
 static uint32_t g_framePixels[kPacManWidth * kPacManFrameHeight];
+
+static const uint64_t kFixedStepMs = 10u;
+static const uint64_t kMaxElapsedMs = 250u;
+static const uint32_t kMaxCatchUpSteps = 8u;
+static const uint64_t kVisualIntervalMs = 16u;
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -33,10 +40,33 @@ static gx_result present(gx_app_context* ctx, gx_handle window) {
         kPacManWidth * kPacManFrameHeight * 4u);
 }
 
+static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacImage& sprites,
+                              const GameState& game) {
+    if (!render_game_scene(&sprites, &game, g_backgroundPixels, g_framePixels,
+                           kPacManWidth * kPacManFrameHeight)) return false;
+    return present(ctx, window) == GX_OK;
+}
+
+static void log_direction_request(gx_app_context* ctx, Direction direction) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    char message[64];
+    const char* name = game_direction_name(direction);
+    uint32_t index = 0;
+    const char* prefix = "PacMan requested direction: ";
+    while (prefix[index] && index + 1u < sizeof(message)) {
+        message[index] = prefix[index];
+        ++index;
+    }
+    for (uint32_t i = 0; name[i] && index + 1u < sizeof(message); ++i) message[index++] = name[i];
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+}
+
 }
 
 extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
-    if (!ctx || !ctx->host || !ctx->host->log || !ctx->host->request_window || !ctx->host->poll_event) return GX_ERROR_INVALID_ARGUMENT;
+    if (!ctx || !ctx->host || !ctx->host->log || !ctx->host->request_window || !ctx->host->poll_event ||
+        !ctx->host->get_ticks_ms) return GX_ERROR_INVALID_ARGUMENT;
     ctx->host->log(ctx, "Nexgen PacMan Native ELF starting");
 
     PacImage level{};
@@ -46,15 +76,19 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         ctx->host->log(ctx, "PacMan resource load failed");
         return GX_ERROR_FAILED;
     }
-    if (!render_static_scene(&level, &sprites, g_framePixels, kPacManWidth * kPacManFrameHeight)) {
-        ctx->host->log(ctx, "PacMan static scene render failed");
+    if (!build_background_frame(&level, g_backgroundPixels, kPacManWidth * kPacManFrameHeight)) {
+        ctx->host->log(ctx, "PacMan background render failed");
         return GX_ERROR_FAILED;
     }
+
+    GameState game;
+    game_initialize(&game);
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
     if (ctx->host->request_window_ex) {
-        windowResult = ctx->host->request_window_ex(ctx, "Nexgen PacMan", 480, 640, GX_WINDOW_FLAG_FIXED_SIZE, &window);
+        windowResult = ctx->host->request_window_ex(ctx, "Nexgen PacMan", 480, 640,
+            GX_WINDOW_FLAG_FIXED_SIZE | GX_WINDOW_FLAG_CENTERED, &window);
     } else {
         windowResult = ctx->host->request_window(ctx, "Nexgen PacMan", 480, 640, &window);
     }
@@ -62,29 +96,94 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         ctx->host->log(ctx, "PacMan window creation failed");
         return windowResult;
     }
-    if (present(ctx, window) != GX_OK) {
+    if (!render_and_present(ctx, window, sprites, game)) {
         ctx->host->log(ctx, "PacMan frame presentation failed");
         return GX_ERROR_FAILED;
     }
-    ctx->host->log(ctx, "PacMan static frame presented");
+    game.visualDirty = false;
+    ctx->host->log(ctx, "PacMan interactive frame presented");
 
-    while (1) {
+    uint64_t previousTicks = gx_get_ticks_ms(ctx);
+    uint64_t lastPresentedTicks = previousTicks;
+    uint64_t accumulatorMs = 0;
+    bool running = true;
+    bool simulationStartedLogged = false;
+
+    while (running) {
         gx_event event;
         clear_event(&event);
-        gx_result eventResult = ctx->host->poll_event(ctx, &event, 500);
+        gx_result eventResult = ctx->host->poll_event(ctx, &event, 10);
         if (eventResult == GX_OK && event.window == window) {
             if (gx_event_is_paint(&event)) {
-                present(ctx, window);
+                if (!render_and_present(ctx, window, sprites, game)) running = false;
+                game.visualDirty = false;
+                lastPresentedTicks = gx_get_ticks_ms(ctx);
             } else if (gx_event_is_close(&event)) {
                 ctx->host->log(ctx, "PacMan close event received");
-                break;
+                running = false;
             } else if (gx_event_is_escape_down(&event)) {
                 ctx->host->log(ctx, "PacMan Escape pressed");
-                break;
+                running = false;
+            } else if (event.type == GX_EVENT_WINDOW_BLUR) {
+                game_focus_lost(&game);
+                ctx->host->log(ctx, "PacMan focus lost; directional state cleared");
+            } else if (event.type == GX_EVENT_WINDOW_FOCUS) {
+                game_focus_gained(&game);
+                ctx->host->log(ctx, "PacMan focus gained; waiting for new direction");
+            } else if (event.type == GX_EVENT_KEY) {
+                const Direction direction = game_direction_for_key(event.param1);
+                if (direction != Direction::None) {
+                    if (event.param2 == GX_KEY_ACTION_DOWN) {
+                        game_press_direction(&game, direction);
+                        log_direction_request(ctx, direction);
+                    } else if (event.param2 == GX_KEY_ACTION_UP) {
+                        game_release_direction(&game, direction);
+                    }
+                }
             }
         } else if (eventResult != GX_OK && eventResult != GX_ERROR_TIMEOUT) {
             ctx->host->log(ctx, "PacMan poll_event failed");
-            break;
+            running = false;
+        }
+
+        if (!running) break;
+
+        const uint64_t currentTicks = gx_get_ticks_ms(ctx);
+        uint64_t elapsedMs = currentTicks - previousTicks;
+        previousTicks = currentTicks;
+        if (elapsedMs > kMaxElapsedMs) {
+            elapsedMs = kMaxElapsedMs;
+            ctx->host->log(ctx, "PacMan timing interval clamped");
+        }
+        accumulatorMs += elapsedMs;
+        if (accumulatorMs > kMaxElapsedMs) accumulatorMs = kMaxElapsedMs;
+
+        uint32_t updates = 0;
+        while (accumulatorMs >= kFixedStepMs && updates < kMaxCatchUpSteps) {
+            game_update(&game);
+            accumulatorMs -= kFixedStepMs;
+            ++updates;
+            if (!simulationStartedLogged) {
+                ctx->host->log(ctx, "PacMan fixed-step simulation started");
+                simulationStartedLogged = true;
+            }
+            if (game.turnAccepted) ctx->host->log(ctx, "PacMan buffered turn accepted");
+            if (game.becameBlocked) ctx->host->log(ctx, "PacMan direction blocked by maze wall");
+            if (game.tunnelWrapped) ctx->host->log(ctx, "PacMan tunnel wrap");
+        }
+        if (updates == kMaxCatchUpSteps && accumulatorMs >= kFixedStepMs) {
+            accumulatorMs = 0;
+            ctx->host->log(ctx, "PacMan simulation catch-up clamped");
+        }
+
+        if (game.visualDirty && currentTicks - lastPresentedTicks >= kVisualIntervalMs) {
+            if (!render_and_present(ctx, window, sprites, game)) {
+                ctx->host->log(ctx, "PacMan frame presentation failed");
+                running = false;
+            } else {
+                game.visualDirty = false;
+                lastPresentedTicks = currentTicks;
+            }
         }
     }
 
