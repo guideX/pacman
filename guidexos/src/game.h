@@ -2,7 +2,20 @@
 
 #include "game_state.h"
 
+static const uint32_t kPacManLevelCompleteDelaySteps = 100u;
+static const uint32_t kPacManDeathDurationSteps = 100u;
+static const uint32_t kPacManReadyAfterDeathSteps = 60u;
+static const uint8_t kPacManInitialLives = 3u;
+static const uint32_t kPacManGhostCount = 4u;
+static const uint32_t kPacManNormalPillScore = 10u;
+static const uint32_t kPacManPowerPillScore = 10u;
+
 void game_initialize(GameState* game);
+void game_reset_level(GameState* game);
+bool game_restart_session(GameState* game);
+void add_score(GameState& game, uint32_t points);
+bool pacman_collides_with_ghost(const PacManState& pacman, const GhostState& ghost);
+const char* ghost_kind_name(GhostKind kind);
 Direction game_direction_for_key(int keyCode);
 void game_press_direction(GameState* game, Direction direction);
 void game_release_direction(GameState* game, Direction direction);

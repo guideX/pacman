@@ -21,6 +21,18 @@ set(GUIDEXOS_STAGED_APP_DIR "${GUIDEXOS_PACKAGE_ROOT}/PacMan")
 
 set(GUIDEXOS_CLANG "C:/Program Files/LLVM/bin/clang++.exe" CACHE FILEPATH "LLVM clang++ used for the freestanding ELF objects")
 set(GUIDEXOS_LLD "C:/Program Files/LLVM/bin/ld.lld.exe" CACHE FILEPATH "LLVM lld used for the freestanding ELF link")
+option(PACMAN_ENABLE_DIAGNOSTICS "Enable gated Native ELF gameplay diagnostics" ON)
+option(PACMAN_HOSTED_DANGER_TEST "Enable test-only automatic Red overlap for hosted danger validation" OFF)
+if(PACMAN_ENABLE_DIAGNOSTICS)
+    set(PACMAN_DIAGNOSTIC_DEFINITION "-DPACMAN_ENABLE_DIAGNOSTICS=1")
+else()
+    set(PACMAN_DIAGNOSTIC_DEFINITION "-DPACMAN_ENABLE_DIAGNOSTICS=0")
+endif()
+if(PACMAN_HOSTED_DANGER_TEST)
+    set(PACMAN_DANGER_TEST_DEFINITION "-DPACMAN_HOSTED_DANGER_TEST=1")
+else()
+    set(PACMAN_DANGER_TEST_DEFINITION "-DPACMAN_HOSTED_DANGER_TEST=0")
+endif()
 if(NOT EXISTS "${GUIDEXOS_CLANG}" OR NOT EXISTS "${GUIDEXOS_LLD}")
     message(FATAL_ERROR "PacMan requires LLVM clang++ and ld.lld to produce a real Native ELF. Set GUIDEXOS_CLANG and GUIDEXOS_LLD.")
 endif()
@@ -36,7 +48,7 @@ set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUID
 
 add_custom_command(OUTPUT "${GUIDEXOS_MAIN_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
     DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/bitmap_loader.h src/renderer.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_GAME_OBJECT}"
@@ -52,7 +64,7 @@ add_custom_command(OUTPUT "${GUIDEXOS_LEVEL_OBJECT}"
 add_custom_command(OUTPUT "${GUIDEXOS_RENDERER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/renderer.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_RENDERER_OBJECT}"
-    DEPENDS src/renderer.cpp src/game_types.h src/game_state.h src/renderer.h src/level.h
+    DEPENDS src/renderer.cpp src/game.h src/game_types.h src/game_state.h src/renderer.h src/level.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_LOADER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"

@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/dev/pacman/guidexos/build-danger/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -97,6 +97,29 @@ desktop.launch Nexgen PacMan
 
 `nativeapp.smoketest com.guidexos.pacman` is the bounded diagnostic path; it requests a close after the smoke interval. Escape and the window close control are handled by the app's normal Native ELF event loop.
 
+## Verified historical pill and level rules
+
+The values below are taken from `basPacSetUp.bas` and `basPacman.bas`, not inferred from the bitmap:
+
+- `Wall = -1`, blank/space = `0`, normal pill `.` = `Pac.Pill = 1`, and power pill `o` = `Pac.PowerPill = 2`.
+- Level 1 contains 240 normal pills and 4 power pills, for 244 consumables.
+- Both normal pills and power pills award 10 points in `basPacman.bas`.
+- Pac-Man's `Xpos`/`Ypos` are the logical center of the 32×32 sprite; the sprite is drawn at `(Xpos - 16, Ypos - 16)`. The port preserves the historical `Offset = 0` test and consumes the tile one movement step ahead using `(Xpos + direction * 16 - 8) / 16` before the movement step.
+- Space cells are blank floor. The port classifies the row-14 outer spaces as `Tunnel` and the central rows 13–15, columns 11–16 as `GhostHouse`; neither special region receives pills.
+- Historical completion is `DotsLeft < 1`. The VB6 timer immediately increments the level, awards a 1000-point clear bonus, resets the level and positions, and starts the intro again. The native scoring milestone intentionally does not add that bonus or any other non-pill score; it presents `LevelComplete` for 100 fixed steps (1 second) before resetting.
+
+## Stationary ghost and lives milestone
+
+`Initialize` sets `Pacman.Lives = 3`. `DefaultPositions` places Red at `(224,184)`, Pink at `(192,224)`, Cyan at `(224,240)`, and Orange at `(256,224)`; their historical directions are Red `2 + Rnd`, Pink up, Cyan down, and Orange up. The native port uses Red-left for deterministic stationary resets.
+
+`ShowBlit` uses ghost body source x positions `0`, `32`, `64`, and `96`, direction source y `Direction * 32`, and the normal ghost mask at source x `192`. The Native ELF retains this `SRCAND`/`SRCPAINT` equivalent composition and draws ghosts after pills, with ghosts after Pac-Man on overlap as in historical `ShowSprites`.
+
+`TestCollisions` uses strict center thresholds `Abs(Pacman.Xpos - Ghost.Xpos) < 16` and `Abs(Pacman.Ypos - Ghost.Ypos) < 16`. The native collision helper applies the same rule to active stationary ghosts and never samples rendered pixels.
+
+Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames.
+
+Power pills still score 10 and disappear. They do not affect stationary ghost behavior; frightened mode and ghost eating are intentionally unimplemented.
+
 ## Current limitations and next milestone
 
-The interactive movement milestone now supports Pac-Man-only movement under the arrow keys, fixed-step simulation, buffered turns, wall blocking, historical reversal-at-alignment behavior, sprite animation, and both horizontal tunnel directions. Static demonstration ghosts are removed from the active scene so they cannot imply collision behavior. Focus loss clears held directions and stops movement; new input is required after focus returns. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is pill and power-pill consumption, score updates, remaining-pill accounting, and level-completion detection. Do not add ghosts or sound until separately requested.
+The interactive Native ELF now supports Pac-Man movement under the arrow keys, four stationary historical ghosts, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is movement setup, next-tile pill consumption, level-complete check, Pac-Man movement, then one collision sample. Focus loss clears held directions and stops movement; new input is required after focus returns. Frightened mode, ghost eating, ghost AI, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is Red ghost movement with legal intersection selection, a simple historical target, and tunnel handling; keep Pink, Cyan, and Orange stationary until that path is validated.

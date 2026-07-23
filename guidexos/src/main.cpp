@@ -22,6 +22,8 @@ static const uint64_t kFixedStepMs = 10u;
 static const uint64_t kMaxElapsedMs = 250u;
 static const uint32_t kMaxCatchUpSteps = 8u;
 static const uint64_t kVisualIntervalMs = 16u;
+static const int kPacManRestartKeyEnter = 13;
+static const int kPacManRestartKeySpace = 32;
 
 static void clear_event(gx_event* event) {
     if (!event) return;
@@ -62,6 +64,64 @@ static void log_direction_request(gx_app_context* ctx, Direction direction) {
     ctx->host->log(ctx, message);
 }
 
+static void log_game_value(gx_app_context* ctx, const char* prefix, uint32_t value) {
+#if PACMAN_ENABLE_DIAGNOSTICS
+    if (!ctx || !ctx->host || !ctx->host->log || !prefix) return;
+    char message[96];
+    uint32_t index = 0;
+    while (prefix[index] && index + 1u < sizeof(message)) message[index++] = prefix[index];
+    char digits[10];
+    uint32_t length = 0;
+    do {
+        digits[length++] = static_cast<char>('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0 && length < sizeof(digits));
+    while (length > 0 && index + 1u < sizeof(message)) message[index++] = digits[--length];
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+#else
+    (void)ctx;
+    (void)prefix;
+    (void)value;
+#endif
+}
+
+static void log_game_events(gx_app_context* ctx, const GameState& game) {
+#if PACMAN_ENABLE_DIAGNOSTICS
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    if (game.normalPillConsumed) ctx->host->log(ctx, "PacMan normal pill consumed");
+    if (game.powerPillConsumed) ctx->host->log(ctx, "PacMan power pill consumed");
+    if (game.scoreChanged) log_game_value(ctx, "PacMan score updated: ", game.score);
+    if (game.normalPillConsumed || game.powerPillConsumed) {
+        log_game_value(ctx, "PacMan remaining consumables: ", game.level.totalConsumablesRemaining);
+    }
+    if (game.countUnderflow) ctx->host->log(ctx, "PacMan consumable count underflow prevented");
+    if (game.levelCompleteEntered) ctx->host->log(ctx, "PacMan level complete");
+    if (game.levelReset) {
+        log_game_value(ctx, "PacMan level reset: ", game.levelNumber);
+        log_game_value(ctx, "PacMan remaining consumables: ", game.level.totalConsumablesRemaining);
+    }
+    if (game.collisionDetected) ctx->host->log(ctx, "PacMan ghost collision detected");
+    if (game.deathEntered) ctx->host->log(ctx, "PacMan death state entered");
+    if (game.lifeDecremented) log_game_value(ctx, "PacMan life decremented; lives remaining: ", game.lives);
+    if (game.actorReset) ctx->host->log(ctx, "PacMan actors reset after death");
+    if (game.gameOverEntered) ctx->host->log(ctx, "PacMan Game Over entered");
+#else
+    (void)ctx;
+    (void)game;
+#endif
+}
+
+#if PACMAN_HOSTED_DANGER_TEST
+static void apply_hosted_danger_test_placement(GameState* game) {
+    if (!game || game->playState != PlayState::Playing || game->simulationSteps < 100u) return;
+    game->ghosts[0].x = game->pacman.x;
+    game->ghosts[0].y = game->pacman.y;
+    game->ghosts[0].active = true;
+    game->visualDirty = true;
+}
+#endif
+
 }
 
 extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
@@ -83,6 +143,16 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
     GameState game;
     game_initialize(&game);
+#if PACMAN_ENABLE_DIAGNOSTICS
+    ctx->host->log(ctx, "PacMan ghosts initialized: 4 stationary entities");
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        const GhostState& ghost = game.ghosts[index];
+        ctx->host->log(ctx, ghost_kind_name(ghost.kind));
+    }
+#endif
+#if PACMAN_HOSTED_DANGER_TEST
+    ctx->host->log(ctx, "PacMan hosted danger test placement enabled");
+#endif
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
@@ -131,6 +201,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 game_focus_gained(&game);
                 ctx->host->log(ctx, "PacMan focus gained; waiting for new direction");
             } else if (event.type == GX_EVENT_KEY) {
+                if (event.param2 == GX_KEY_ACTION_DOWN && game.playState == PlayState::GameOver &&
+                    (event.param1 == kPacManRestartKeyEnter || event.param1 == kPacManRestartKeySpace)) {
+                    if (game_restart_session(&game)) {
+#if PACMAN_ENABLE_DIAGNOSTICS
+                        ctx->host->log(ctx, "PacMan session restarted");
+#endif
+                    }
+                    continue;
+                }
                 const Direction direction = game_direction_for_key(event.param1);
                 if (direction != Direction::None) {
                     if (event.param2 == GX_KEY_ACTION_DOWN) {
@@ -160,6 +239,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
         uint32_t updates = 0;
         while (accumulatorMs >= kFixedStepMs && updates < kMaxCatchUpSteps) {
+#if PACMAN_HOSTED_DANGER_TEST
+            apply_hosted_danger_test_placement(&game);
+#endif
             game_update(&game);
             accumulatorMs -= kFixedStepMs;
             ++updates;
@@ -170,6 +252,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (game.turnAccepted) ctx->host->log(ctx, "PacMan buffered turn accepted");
             if (game.becameBlocked) ctx->host->log(ctx, "PacMan direction blocked by maze wall");
             if (game.tunnelWrapped) ctx->host->log(ctx, "PacMan tunnel wrap");
+            log_game_events(ctx, game);
         }
         if (updates == kMaxCatchUpSteps && accumulatorMs >= kFixedStepMs) {
             accumulatorMs = 0;

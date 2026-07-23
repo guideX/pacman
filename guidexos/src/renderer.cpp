@@ -39,12 +39,15 @@ static void pill(uint32_t* frame, int centerX, int centerY, int radius, uint32_t
     }
 }
 
-static void draw_pills(uint32_t* frame) {
+static void draw_pills(uint32_t* frame, const LevelState& level) {
     for (int y = 0; y < kPacManMazeRows; ++y) {
         for (int x = 0; x < kPacManMazeColumns; ++x) {
-            const char tile = level_tile(x, y);
-            if (tile == '.') pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 2, 0x00FFC8A0u);
-            if (tile == 'o') pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 6, 0x00FFFFFFu);
+            const CellType cell = level.cells[y][x];
+            if (cell == CellType::Pill) {
+                pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 2, 0x00FFC8A0u);
+            } else if (cell == CellType::PowerPill) {
+                pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 6, 0x00FFFFFFu);
+            }
         }
     }
 }
@@ -73,7 +76,14 @@ static const char* glyph(char c) {
     switch (c) {
     case '0': return "01110 10001 10011 10101 11001 10001 01110";
     case '1': return "00100 01100 00100 00100 00100 00100 01110";
+    case '2': return "01110 10001 00001 00010 00100 01000 11111";
+    case '3': return "11110 00001 00001 01110 00001 00001 11110";
+    case '4': return "00010 00110 01010 10010 11111 00010 00010";
     case '5': return "11111 10000 10000 11110 00001 10001 01110";
+    case '6': return "00110 01000 10000 11110 10001 10001 01110";
+    case '7': return "11111 00001 00010 00100 01000 01000 01000";
+    case '8': return "01110 10001 10001 01110 10001 10001 01110";
+    case '9': return "01110 10001 10001 01111 00001 00010 11100";
     case ' ': return "00000 00000 00000 00000 00000 00000 00000";
     case ':': return "00000 00100 00100 00000 00100 00100 00000";
     case '-': return "00000 00000 00000 11111 00000 00000 00000";
@@ -84,6 +94,7 @@ static const char* glyph(char c) {
     case 'G': return "01110 10001 10000 10111 10001 10001 01110";
     case 'H': return "10001 10001 10001 11111 10001 10001 10001";
     case 'I': return "11111 00100 00100 00100 00100 00100 11111";
+    case 'L': return "10000 10000 10000 10000 10000 10000 11111";
     case 'M': return "10001 11011 10101 10101 10001 10001 10001";
     case 'N': return "10001 11001 10101 10011 10001 10001 10001";
     case 'O': return "01110 10001 10001 10001 10001 10001 01110";
@@ -94,6 +105,7 @@ static const char* glyph(char c) {
     case 'V': return "10001 10001 10001 10001 01010 01010 00100";
     case 'W': return "10001 10001 10001 10101 10101 11011 10001";
     case 'X': return "10001 10001 01010 00100 01010 10001 10001";
+    case 'Y': return "10001 10001 01010 00100 00100 00100 00100";
     default: return "00000 00000 00000 00000 00000 00000 00000";
     }
 }
@@ -124,6 +136,48 @@ static bool valid_frame(uint32_t* framePixels, uint32_t framePixelCount) {
     return framePixels && framePixelCount >= requiredPixels;
 }
 
+static void draw_number(uint32_t* frame, int x, int y, uint32_t value, uint32_t color, int scale) {
+    char digits[10];
+    int length = 0;
+    do {
+        digits[length++] = static_cast<char>('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0 && length < static_cast<int>(sizeof(digits)));
+    for (int i = length - 1; i >= 0; --i) {
+        char glyphText[2] = {digits[i], '\0'};
+        draw_text(frame, x, y, glyphText, color, scale);
+        x += 6 * scale;
+    }
+}
+
+static void draw_status(uint32_t* frame, const GameState& game) {
+    const uint32_t color = 0x00FFFFFFu;
+    draw_text(frame, 10, 10, "SCORE:", color, 1);
+    draw_number(frame, 52, 10, game.score, color, 1);
+    draw_text(frame, 190, 10, "LIVES:", color, 1);
+    draw_number(frame, 232, 10, game.lives, color, 1);
+    draw_text(frame, 300, 10, "LEVEL:", color, 1);
+    draw_number(frame, 342, 10, game.levelNumber, color, 1);
+}
+
+static int safe_direction_index(Direction direction) {
+    const int value = static_cast<int>(direction);
+    return value >= 0 && value < 4 ? value : static_cast<int>(Direction::Right);
+}
+
+static void draw_ghosts(const PacImage* sprites, uint32_t* frame, const GameState& game) {
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        const GhostState& ghost = game.ghosts[index];
+        if (!ghost.active) continue;
+        const int sourceX = static_cast<int>(ghost.kind) * kPacManSpriteSize;
+        const int sourceY = safe_direction_index(ghost.direction) * kPacManSpriteSize;
+        // Historical ShowSprites presents Pac-Man first and then ghosts. The
+        // native scene keeps that ordering so a ghost owns an overlap pixel.
+        draw_sprite(sprites, frame, ghost.x - 16, ghost.y - 16,
+                    sourceX, sourceY, 192);
+    }
+}
+
 }
 
 bool build_background_frame(const PacImage* level, uint32_t* backgroundPixels, uint32_t framePixelCount) {
@@ -133,9 +187,6 @@ bool build_background_frame(const PacImage* level, uint32_t* backgroundPixels, u
 
     fill(backgroundPixels, 0x00000000u);
     copy_level(level, backgroundPixels);
-    draw_pills(backgroundPixels);
-    draw_text(backgroundPixels, 10, 10, "SCORE: 0", 0x00FFFFFFu, 1);
-    draw_text(backgroundPixels, 290, 10, "HI SCORE: 10000", 0x00FFFFFFu, 1);
     draw_text(backgroundPixels, 80, 536, "ARROWS MOVE - ESC TO EXIT", 0x00FFFFFFu, 1);
     return true;
 }
@@ -148,6 +199,8 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
         sprites->strideBytes < sprites->width * 4u) return false;
 
     copy_pixels(backgroundPixels, framePixels);
+    draw_pills(framePixels, game->level);
+    draw_status(framePixels, *game);
     int mouthFrame = game->pacman.mouth;
     if (mouthFrame < 1 || mouthFrame > 3) mouthFrame = 3;
     const int sourceX = static_cast<int>(game->pacman.facingDirection) * kPacManSpriteSize;
@@ -155,6 +208,20 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
     if (game->pacman.facingDirection != Direction::None) {
         draw_sprite(sprites, framePixels, game->pacman.x - 16, game->pacman.y - 16,
                     sourceX, sourceY, sourceX + 128);
+    }
+    draw_ghosts(sprites, framePixels, *game);
+    if (game->playState == PlayState::Dying) {
+        const int deathFrame = static_cast<int>(game->deathAnimationFrame / 4u) % 3;
+        const int deathSourceY = 128 + (deathFrame + 1) * kPacManSpriteSize;
+        draw_sprite(sprites, framePixels, game->pacman.x - 16, game->pacman.y - 16,
+                    sourceX, deathSourceY, sourceX + 128);
+        draw_text(framePixels, 190, 270, "DEATH", 0x00FF4040u, 2);
+    } else if (game->playState == PlayState::ReadyAfterDeath) {
+        draw_text(framePixels, 200, 270, "READY", 0x00FFFF00u, 2);
+    } else if (game->playState == PlayState::LevelComplete) {
+        draw_text(framePixels, 140, 270, "LEVEL COMPLETE", 0x00FFFF00u, 2);
+    } else if (game->playState == PlayState::GameOver) {
+        draw_text(framePixels, 170, 270, "GAME OVER", 0x00FF4040u, 2);
     }
     (void)requiredPixels;
     return true;

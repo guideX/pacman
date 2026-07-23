@@ -1,0 +1,13 @@
+# ninja log v7
+5	270	8064001542114156	native-objects/bitmap_loader.o	7a08e070ca066bf8
+5	270	8064001542114156	D:/dev/pacman/guidexos/build-danger/native-objects/bitmap_loader.o	7a08e070ca066bf8
+17	283	8064001542458340	native-objects/game.o	ae2029c1170fa7d
+17	283	8064001542458340	D:/dev/pacman/guidexos/build-danger/native-objects/game.o	ae2029c1170fa7d
+271	454	8064001544168965	native-objects/level.o	2608bccb0bd7b0e4
+271	454	8064001544168965	D:/dev/pacman/guidexos/build-danger/native-objects/level.o	2608bccb0bd7b0e4
+283	499	8064001544656924	native-objects/main.o	5fcd9fa5c4216ae8
+283	499	8064001544656924	D:/dev/pacman/guidexos/build-danger/native-objects/main.o	5fcd9fa5c4216ae8
+454	581	8064001545504612	native-objects/renderer.o	5255ba821ba70df7
+454	581	8064001545504612	D:/dev/pacman/guidexos/build-danger/native-objects/renderer.o	5255ba821ba70df7
+581	659	8064001546320339	D:/dev/pacman/guidexos/bin/amd64/pacman.elf	59c98d1c1d447445
+659	874	8064001546423747	CMakeFiles/pacman-native.util	6f1d0efacd128a43
