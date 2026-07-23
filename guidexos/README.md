@@ -59,6 +59,15 @@ cmake --build build
 
 The build writes the local ELF to `bin/amd64/pacman.elf` and stages the discovered package at `D:\Apps\PacMan`, which is the hosted runtime's `/Apps` package root. Override `GUIDEXOS_PACKAGE_ROOT` for another guideXOS target.
 
+The danger-state hosted validation is an explicitly isolated build. It uses the same `PACMAN_HOSTED_DANGER_TEST` compile-time hook that defaults to `OFF`, but writes `bin/amd64/pacman-danger-validation.elf`, stages a separate `D:\Apps\PacManDangerValidation` package, and uses the test-only manifest `app-danger-validation.json`. It never writes the production ELF or `D:\Apps\PacMan`:
+
+```powershell
+cmake -S . -B build-danger -G Ninja -DPACMAN_HOSTED_DANGER_TEST=ON -DGUIDEXOS_SERVER_ROOT=D:\dev\guideXOSServer -DGUIDEXOS_PACKAGE_ROOT=D:\Apps
+cmake --build build-danger --target pacman-danger-validation
+```
+
+The validation hook places Red over Pac-Man at bounded simulation steps for up to three deterministic hosted deaths. It is not exposed through a production key and is absent from ordinary builds.
+
 ## Native platform additions
 
 The existing `guidexos-c-abi-v1` table keeps its original member order and appends these general-purpose calls:
@@ -116,7 +125,7 @@ The values below are taken from `basPacSetUp.bas` and `basPacman.bas`, not infer
 
 `TestCollisions` uses strict center thresholds `Abs(Pacman.Xpos - Ghost.Xpos) < 16` and `Abs(Pacman.Ypos - Ghost.Ypos) < 16`. The native collision helper applies the same rule to active stationary ghosts and never samples rendered pixels.
 
-Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames.
+Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames. The status strip shows the total remaining lives as a number, including zero in Game Over.
 
 Power pills still score 10 and disappear. They do not affect stationary ghost behavior; frightened mode and ghost eating are intentionally unimplemented.
 

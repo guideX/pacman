@@ -11,3 +11,7 @@
 454	581	8064001545504612	D:/dev/pacman/guidexos/build-danger/native-objects/renderer.o	5255ba821ba70df7
 581	659	8064001546320339	D:/dev/pacman/guidexos/bin/amd64/pacman.elf	59c98d1c1d447445
 659	874	8064001546423747	CMakeFiles/pacman-native.util	6f1d0efacd128a43
+2	1491	8064794677179634	native-objects/main.o	5fcd9fa5c4216ae8
+2	1491	8064794677179634	D:/dev/pacman/guidexos/build-danger/native-objects/main.o	5fcd9fa5c4216ae8
+1491	2491	8064794687163575	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	b0a400e17027711a
+2491	2877	8064794687277662	CMakeFiles/pacman-danger-validation.util	702a2ad678d7960c

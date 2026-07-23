@@ -13,38 +13,18 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
-public static class PacManDangerCapture4 {
+public static class PacManDangerCapture5 {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     [DllImport("user32.dll", CharSet = CharSet.Ansi)] public static extern IntPtr FindWindow(string cls, string title);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
-    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     public const uint KEYUP = 0x0002;
     public static void Key(IntPtr hwnd, byte key, bool down) {
+        if (hwnd == IntPtr.Zero) throw new InvalidOperationException("The hosted compositor handle is invalid.");
         SetForegroundWindow(hwnd);
         keybd_event(key, 0, down ? 0u : KEYUP, UIntPtr.Zero);
-    }
-    public static void Capture(IntPtr hwnd, string path) {
-        RECT rect;
-        if (!GetWindowRect(hwnd, out rect) || rect.Right <= rect.Left || rect.Bottom <= rect.Top) {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
-            using (Bitmap fallback = new Bitmap(bounds.Width, bounds.Height))
-            using (Graphics fallbackGraphics = Graphics.FromImage(fallback)) {
-                fallbackGraphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
-                fallback.Save(path, ImageFormat.Png);
-            }
-            return;
-        }
-        using (Bitmap bitmap = new Bitmap(rect.Right - rect.Left, rect.Bottom - rect.Top))
-        using (Graphics graphics = Graphics.FromImage(bitmap)) {
-            SetForegroundWindow(hwnd);
-            IntPtr hdc = graphics.GetHdc();
-            bool printed = PrintWindow(hwnd, hdc, 2u);
-            graphics.ReleaseHdc(hdc);
-            if (!printed) graphics.CopyFromScreen(new Point(rect.Left, rect.Top), Point.Empty, bitmap.Size);
-            bitmap.Save(path, ImageFormat.Png);
-        }
     }
     public static void CapturePrimary(string path) {
         Rectangle bounds = Screen.PrimaryScreen.Bounds;
@@ -54,46 +34,72 @@ public static class PacManDangerCapture4 {
             bitmap.Save(path, ImageFormat.Png);
         }
     }
+    public static bool CaptureCompositor(string path, IntPtr hwnd) {
+        RECT rect;
+        if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out rect)) return false;
+        int width = rect.Right - rect.Left;
+        int height = rect.Bottom - rect.Top;
+        if (width <= 0 || height <= 0) return false;
+        using (Bitmap bitmap = new Bitmap(width, height))
+        using (Graphics graphics = Graphics.FromImage(bitmap)) {
+            SetForegroundWindow(hwnd);
+            IntPtr hdc = graphics.GetHdc();
+            bool printed;
+            try { printed = PrintWindow(hwnd, hdc, 2); }
+            finally { graphics.ReleaseHdc(hdc); }
+            if (!printed) return false;
+            bitmap.Save(path, ImageFormat.Png);
+        }
+        return true;
+    }
 }
 '@
 
 $pacmanRoot = Split-Path -Parent $PSScriptRoot
 $serverRoot = 'D:\dev\guideXOSServer'
-$rawLog = Join-Path $serverRoot 'hosted-pacman-danger-raw.log'
-$summaryPath = Join-Path $serverRoot 'hosted-pacman-danger-validation.txt'
+$serverRootFull = [IO.Path]::GetFullPath($serverRoot).TrimEnd('\')
+$serverExe = [IO.Path]::GetFullPath((Join-Path $serverRoot 'guideXOSServer.experimental.exe'))
+$normalServerExe = [IO.Path]::GetFullPath((Join-Path $serverRoot 'guideXOSServer.exe'))
+$runId = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$rawLog = Join-Path $serverRoot "hosted-pacman-danger-$runId-raw.log"
+$summaryPath = Join-Path $serverRoot "hosted-pacman-danger-$runId-validation.txt"
 $captureDirectory = Join-Path $pacmanRoot 'captures'
+$results = [System.Collections.Generic.List[string]]::new()
+$ownedPids = [System.Collections.Generic.List[int]]::new()
+$process = $null
+$compositor = [IntPtr]::Zero
+$launchCount = 0
+$failed = $false
 
-if (Get-Process -Name 'guideXOSServer.experimental' -ErrorAction SilentlyContinue) {
-    throw 'guideXOSServer.experimental.exe is already running; close it before this isolated validation.'
+function Get-ServerProcesses {
+    $paths = @($serverExe, $normalServerExe)
+    @(Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -and ($paths -contains ([IO.Path]::GetFullPath($_.ExecutablePath)))
+    })
 }
 
-New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
-if (Test-Path -LiteralPath $rawLog) { Clear-Content -LiteralPath $rawLog }
-
-$psi = [ProcessStartInfo]::new()
-$psi.FileName = $env:ComSpec
-$psi.Arguments = '/d /c ".\guideXOSServer.experimental.exe > hosted-pacman-danger-raw.log 2>&1"'
-$psi.WorkingDirectory = $serverRoot
-$psi.UseShellExecute = $false
-$psi.CreateNoWindow = $true
-$psi.RedirectStandardInput = $true
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$process = [Process]::new()
-$process.StartInfo = $psi
-[void]$process.Start()
-
-$results = [System.Collections.Generic.List[string]]::new()
-$compositor = [IntPtr]::Zero
-
-function Send-ServerCommand([string]$command) {
-    $process.StandardInput.WriteLine($command)
-    $process.StandardInput.Flush()
+function Add-OwnedDescendants {
+    for ($pass = 0; $pass -lt 5; ++$pass) {
+        $snapshot = @(Get-CimInstance Win32_Process)
+        foreach ($item in $snapshot) {
+            if (-not $item.ExecutablePath -or -not $ownedPids.Contains([int]$item.ParentProcessId)) { continue }
+            $fullPath = [IO.Path]::GetFullPath($item.ExecutablePath)
+            if ($fullPath.StartsWith($serverRootFull + '\', [StringComparison]::OrdinalIgnoreCase) -and
+                -not $ownedPids.Contains([int]$item.ProcessId)) {
+                [void]$ownedPids.Add([int]$item.ProcessId)
+            }
+        }
+    }
 }
 
 function Read-RawLog {
     if (Test-Path -LiteralPath $rawLog) {
-        try { return [File]::ReadAllText($rawLog) } catch { return '' }
+        try {
+            $stream = [FileStream]::new($rawLog, [FileMode]::Open, [FileAccess]::Read, [FileShare]::ReadWrite)
+            $reader = [StreamReader]::new($stream)
+            try { return $reader.ReadToEnd() }
+            finally { $reader.Dispose(); $stream.Dispose() }
+        } catch { return '' }
     }
     return ''
 }
@@ -116,135 +122,230 @@ function Wait-ForLogCount([string]$pattern, [int]$minimumCount, [int]$timeoutMs 
     return $false
 }
 
+function Get-LogCount([string]$pattern) {
+    return [regex]::Matches((Read-RawLog), $pattern).Count
+}
+
+function Wait-ForAdditionalLogCount([string]$pattern, [int]$baselineCount, [int]$additionalCount, [int]$timeoutMs = 12000) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
+    $targetCount = $baselineCount + $additionalCount
+    do {
+        if ((Get-LogCount $pattern) -ge $targetCount) { return $true }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Wait-ForNoAdditionalLogCount([string]$pattern, [int]$baselineCount, [int]$timeoutMs = 300) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
+    do {
+        if ([regex]::Matches((Read-RawLog), $pattern).Count -gt $baselineCount) { return $false }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $true
+}
+
+function Send-ServerCommand([string]$command) {
+    if (-not $process -or $process.HasExited) { throw "Cannot send '$command': server wrapper is not running." }
+    $process.StandardInput.WriteLine($command)
+    $process.StandardInput.Flush()
+}
+
+function Last-CreatedWindowId {
+    $matches = [regex]::Matches((Read-RawLog), 'Compositor created window id=(\d+)')
+    if ($matches.Count -eq 0) { return [uint64]0 }
+    return [uint64]$matches[$matches.Count - 1].Groups[1].Value
+}
+
+function Wait-ForNewWindowId([uint64]$previousId, [int]$timeoutMs = 30000) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
+    do {
+        $currentId = Last-CreatedWindowId
+        if ($currentId -gt $previousId) { return $currentId }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return [uint64]0
+}
+
 function Send-Key([int]$key, [int]$durationMs = 100) {
-    [PacManDangerCapture4]::Key($compositor, [byte]$key, $true)
+    [PacManDangerCapture5]::Key($compositor, [byte]$key, $true)
     Start-Sleep -Milliseconds $durationMs
-    [PacManDangerCapture4]::Key($compositor, [byte]$key, $false)
+    [PacManDangerCapture5]::Key($compositor, [byte]$key, $false)
     Start-Sleep -Milliseconds 80
 }
 
-function Run-RedRoute {
-    # Historical-coordinate route from Pac-Man's start to reachable Red:
-    # The initial automatic right travel reaches logical column 14 first;
-    # from there the route is left two, up three, left three, up nine, right four.
-    Send-Key 37 260
-    Send-Key 37 260
-    Send-Key 38 650
-    Send-Key 37 650
-    Send-Key 38 1550
-    Send-Key 39 800
-}
-
-function Capture-Hosted([string]$fileName) {
-    Save-FullScreen $fileName
-}
-
-function Save-FullScreen([string]$fileName) {
-    $path = Join-Path $captureDirectory $fileName
-    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bitmap = [System.Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    try {
-        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-        $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    } finally {
-        $graphics.Dispose()
-        $bitmap.Dispose()
+function Capture-Hosted([string]$label) {
+    $path = Join-Path $captureDirectory "pacman-danger-$runId-$label.png"
+    if (-not [PacManDangerCapture5]::CaptureCompositor($path, $compositor)) {
+        throw "Failed to capture the owned guideXOS compositor window for $label."
     }
     $results.Add("capture=$path")
 }
 
-function Launch-PacMan([int]$cycle) {
-    Send-ServerCommand 'desktop.launch Nexgen PacMan'
-    $launched = Wait-ForLogCount 'PacMan interactive frame presented' $cycle 30000
-    $results.Add("cycle=$cycle launch=$launched")
-    Start-Sleep -Milliseconds 1400
+function Launch-DangerPacMan {
+    $script:launchCount++
+    Send-ServerCommand 'desktop.launch Nexgen PacMan Danger Validation'
+    if (-not (Wait-ForLogCount 'PacMan interactive frame presented' $script:launchCount 30000)) {
+        throw "Danger validation launch $($script:launchCount) did not present an interactive frame or compositor window."
+    }
+    $windowId = Last-CreatedWindowId
+    if ($windowId -eq 0) { throw "Danger validation launch $($script:launchCount) presented no compositor window." }
+    $results.Add("cycle=$($script:launchCount) launch=True windowId=$windowId")
+    Start-Sleep -Milliseconds 250
+}
+
+function Escape-And-Wait([int]$cycle) {
+    # Prime the compositor's focused-input path before Escape. This matches the
+    # existing hosted input contract without adding any Pac-Man production key.
+    for ($attempt = 1; $attempt -le 3; ++$attempt) {
+        Send-Key 39 80
+        Send-Key 27
+        if (Wait-ForLogCount 'Cleanup complete app=com.guidexos.pacman.danger-validation.*remainingWindows=0' $cycle 2000) {
+            $results.Add("cycle=$cycle escape-cleanup=True attempt=$attempt")
+            return
+        }
+    }
+    throw "Danger validation cleanup did not report zero owned windows in cycle $cycle after three Escape attempts."
 }
 
 try {
+    $existing = @(Get-ServerProcesses)
+    if ($existing.Count -gt 0) {
+        $details = ($existing | ForEach-Object { "PID=$($_.ProcessId) path=$($_.ExecutablePath)" }) -join '; '
+        throw "A guideXOS Server process is already running; refusing to overlap it: $details"
+    }
+    $existingCompositor = [PacManDangerCapture5]::FindWindow('GXOS_COMPOSITOR', 'guideXOSCpp Compositor')
+    if ($existingCompositor -ne [IntPtr]::Zero) {
+        throw 'Another guideXOS compositor instance already owns the compositor window; close that session before validation.'
+    }
+
+    New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
+    $logName = Split-Path -Leaf $rawLog
+    $psi = [ProcessStartInfo]::new()
+    $psi.FileName = $env:ComSpec
+    $psi.Arguments = "/d /c `".\guideXOSServer.experimental.exe > $logName 2>&1`""
+    $psi.WorkingDirectory = $serverRoot
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $process = [Process]::new()
+    $process.StartInfo = $psi
+    if (-not $process.Start()) { throw 'Failed to start the experimental guideXOS Server wrapper.' }
+    [void]$ownedPids.Add($process.Id)
+    $results.Add("run=$runId")
+    $results.Add("server-wrapper-pid=$($process.Id)")
+
+    $serverPid = 0
+    for ($i = 0; $i -lt 100 -and $serverPid -eq 0; ++$i) {
+        Add-OwnedDescendants
+        $child = @(Get-ServerProcesses | Where-Object { $_.ParentProcessId -eq $process.Id -and $_.ExecutablePath -ieq $serverExe })
+        if ($child.Count -gt 0) { $serverPid = [int]$child[0].ProcessId; break }
+        Start-Sleep -Milliseconds 100
+    }
+    if ($serverPid -eq 0) { throw "Experimental guideXOS Server child did not start; inspect $rawLog" }
+    $results.Add("server-pid=$serverPid")
+
     Send-ServerCommand 'gui.start'
     for ($i = 0; $i -lt 50 -and $compositor -eq [IntPtr]::Zero; ++$i) {
         Start-Sleep -Milliseconds 200
-        $compositor = [PacManDangerCapture4]::FindWindow('GXOS_COMPOSITOR', 'guideXOSCpp Compositor')
+        $compositor = [PacManDangerCapture5]::FindWindow('GXOS_COMPOSITOR', 'guideXOSCpp Compositor')
     }
-    if ($compositor -eq [IntPtr]::Zero) { throw 'Hosted compositor window was not found.' }
+    if ($compositor -eq [IntPtr]::Zero) {
+        throw 'Hosted compositor window was not created. Another compositor instance may be blocking window creation.'
+    }
     $results.Add('compositor=found')
 
-    Launch-PacMan 1
-    Write-Output 'danger-harness: launched cycle 1'
-    Capture-Hosted 'pacman-four-ghosts.png'
-    Write-Output 'danger-harness: captured ghosts'
-    Run-RedRoute
-    Write-Output 'danger-harness: route complete'
-    $collision1 = Wait-ForLogCount 'PacMan ghost collision detected' 1 8000
+    $collisionBaseline = Get-LogCount 'PacMan ghost collision detected'
+    $lifeTwoBaseline = Get-LogCount 'PacMan life decremented; lives remaining: 2'
+    Launch-DangerPacMan
+    Capture-Hosted 'playing'
+    $noEarlyCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 350
+    $results.Add("cycle=1 no-automatic-collision-before-schedule=$noEarlyCollision")
+
+    $collision1 = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 1 5000
     $results.Add("cycle=1 collision=$collision1")
-    if ($collision1) {
-        Start-Sleep -Milliseconds 150
-        Save-FullScreen 'pacman-death-danger.png'
-    }
-    Send-Key 27 100
-    $cleanup1 = Wait-ForLogCount 'Cleanup complete app=com.guidexos.pacman.*remainingWindows=0' 1 30000
-    $results.Add("cycle=1 escape-during-death-cleanup=$cleanup1")
+    if (-not $collision1) { throw 'Danger validation did not detect the first deterministic collision.' }
+    Start-Sleep -Milliseconds 350
+    Capture-Hosted 'dying'
+    $death = (Get-LogCount 'PacMan death state entered') -ge 1
+    $life = (Get-LogCount 'PacMan life decremented; lives remaining: 2') -eq ($lifeTwoBaseline + 1)
+    $duplicateSuppressed = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' ($collisionBaseline + 1) 350
+    $results.Add("cycle=1 dying=$death lives-decremented-once=$life duplicate-death-suppressed=$duplicateSuppressed")
 
-    Launch-PacMan 2
-    for ($death = 1; $death -le 3; ++$death) {
-        Run-RedRoute
-        $collision = Wait-ForLogCount 'PacMan ghost collision detected' $death 9000
-        $results.Add("cycle=2 collision-$death=$collision")
-        if ($death -lt 3) { Start-Sleep -Milliseconds 2400 }
+    $resetBaseline = Get-LogCount 'PacMan actors reset after death'
+    $actorReset = Wait-ForAdditionalLogCount 'PacMan actors reset after death' $resetBaseline 1 3000
+    Start-Sleep -Milliseconds 350
+    Capture-Hosted 'ready'
+    $readyCollisionBaseline = Get-LogCount 'PacMan ghost collision detected'
+    $readySafe = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $readyCollisionBaseline 350
+    $results.Add("cycle=1 actor-reset=$actorReset ready-collision-free-window=$readySafe")
+    if (-not ($death -and $life -and $duplicateSuppressed -and $actorReset -and $readySafe)) {
+        throw 'Danger validation did not preserve the bounded death and Ready-after-death transition.'
     }
-    $gameOver = Wait-ForLog 'PacMan Game Over entered' 5000
-    $results.Add("cycle=2 game-over=$gameOver")
-    if ($gameOver) {
-        Start-Sleep -Milliseconds 150
-        Save-FullScreen 'pacman-game-over-danger.png'
-    }
-    Send-Key 13 100
-    $restart = Wait-ForLog 'PacMan session restarted' 5000
-    $results.Add("cycle=2 restart=$restart")
-    if ($restart) {
-        Start-Sleep -Milliseconds 250
-        Save-FullScreen 'pacman-restart-danger.png'
-    }
-    Send-Key 27 100
-    $cleanup2 = Wait-ForLogCount 'Cleanup complete app=com.guidexos.pacman.*remainingWindows=0' 2 30000
-    $results.Add("cycle=2 escape-after-restart-cleanup=$cleanup2")
 
-    Launch-PacMan 3
-    Run-RedRoute
-    $collision3 = Wait-ForLogCount 'PacMan ghost collision detected' 4 9000
-    $results.Add("cycle=3 collision=$collision3")
-    Send-Key 27 100
-    $cleanup3 = Wait-ForLogCount 'Cleanup complete app=com.guidexos.pacman.*remainingWindows=0' 3 30000
-    $results.Add("cycle=3 escape-cleanup=$cleanup3")
+    $collisionB = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 2 8000
+    $collisionC = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 3 8000
+    $gameOverBaseline = Get-LogCount 'PacMan Game Over entered'
+    $lifeZero = (Get-LogCount 'PacMan life decremented; lives remaining: 0') -ge 1
+    $gameOver = Wait-ForAdditionalLogCount 'PacMan Game Over entered' $gameOverBaseline 1 8000
+    $results.Add("cycle=1 collisions=$($collision1 -and $collisionB -and $collisionC) game-over=$gameOver lives-zero=$lifeZero")
+    if (-not ($collision1 -and $collisionB -and $collisionC -and $gameOver -and $lifeZero)) {
+        throw 'Danger validation did not reach Game Over after three bounded collisions.'
+    }
+    Start-Sleep -Milliseconds 500
+    Capture-Hosted 'game-over'
+    $restart = $false
+    for ($attempt = 1; $attempt -le 3 -and -not $restart; ++$attempt) {
+        Send-Key 39 80
+        Send-Key 13
+        $restart = Wait-ForLog 'PacMan session restarted' 2000
+    }
+    $results.Add("cycle=1 restart=$restart")
+    if (-not $restart) { throw 'Enter did not restart the Game Over session.' }
+    Start-Sleep -Milliseconds 700
+    Capture-Hosted 'restart'
+    Escape-And-Wait 1
 
     Send-ServerCommand 'nativeapp.processes'
     Start-Sleep -Milliseconds 500
+    Add-OwnedDescendants
     $finalLog = Read-RawLog
     $results.Add("zero-owned-windows=$([bool]($finalLog -match 'remainingWindows=0'))")
     $results.Add("retained-frame-present-diagnostics=$([bool]($finalLog -match 'present_frame call count'))")
+    $results.Add("danger-placement-count=$([regex]::Matches($finalLog, 'PacMan hosted danger overlap placed').Count)")
 }
 catch {
+    $failed = $true
     $results.Add("error=$($_.Exception.Message)")
+    Write-Error $_
 }
 finally {
     try {
-    if ($process -and -not $process.HasExited) {
-        Send-ServerCommand 'exit'
-        $process.StandardInput.Close()
-        if (-not $process.WaitForExit(20000)) {
-            $process.Kill()
-            $process.WaitForExit()
+        if ($process -and -not $process.HasExited) {
+            try { Send-ServerCommand 'exit' } catch {}
+            try { $process.StandardInput.Close() } catch {}
+            if (-not $process.WaitForExit(20000)) {
+                try { $process.Kill() } catch {}
+                try { $process.WaitForExit(5000) } catch {}
+            }
         }
+        Add-OwnedDescendants
+        foreach ($processId in @($ownedPids | Sort-Object -Descending -Unique)) {
+            try { Stop-Process -Id $processId -Force -ErrorAction Stop } catch {}
+        }
+        Start-Sleep -Milliseconds 500
+        $remaining = @(Get-ServerProcesses)
+        $results.Add("remaining-owned-server-processes=$($remaining.Count)")
+        if ($process) { $results.Add("server-wrapper-exit-code=$($process.ExitCode)") }
     }
-    if ($process) { $results.Add("server-exit-code=$($process.ExitCode)") }
-
-    # The server is started through cmd.exe for log redirection; clean the
-    # child runtime if cmd reports success before its child has exited.
-    Get-Process -Name 'guideXOSServer.experimental' -ErrorAction SilentlyContinue | Stop-Process -Force
-    } catch {
+    catch {
+        $failed = $true
         $results.Add("cleanup-error=$($_.Exception.Message)")
     }
     [File]::WriteAllLines($summaryPath, [string[]]$results)
     $results | ForEach-Object { $_ }
 }
+
+if ($failed) { exit 1 }

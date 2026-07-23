@@ -5,6 +5,14 @@
 #include "game_types.h"
 #include "renderer.h"
 
+#ifndef PACMAN_ENABLE_DIAGNOSTICS
+#define PACMAN_ENABLE_DIAGNOSTICS 0
+#endif
+
+#ifndef PACMAN_HOSTED_DANGER_TEST
+#define PACMAN_HOSTED_DANGER_TEST 0
+#endif
+
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     for (uint64_t i = 0; i < bytes; ++i) output[i] = static_cast<uint8_t>(value);
@@ -113,12 +121,18 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
 }
 
 #if PACMAN_HOSTED_DANGER_TEST
-static void apply_hosted_danger_test_placement(GameState* game) {
-    if (!game || game->playState != PlayState::Playing || game->simulationSteps < 100u) return;
+static bool apply_hosted_danger_test_placement(GameState* game, uint32_t* placementCount) {
+    if (!game || !placementCount || game->playState != PlayState::Playing || *placementCount >= 3u) return false;
+    const uint32_t stepsBetweenPlacements = kPacManDeathDurationSteps +
+        kPacManReadyAfterDeathSteps + 30u;
+    const uint32_t nextPlacementStep = 100u + *placementCount * stepsBetweenPlacements;
+    if (game->simulationSteps < nextPlacementStep) return false;
     game->ghosts[0].x = game->pacman.x;
     game->ghosts[0].y = game->pacman.y;
     game->ghosts[0].active = true;
     game->visualDirty = true;
+    ++*placementCount;
+    return true;
 }
 #endif
 
@@ -178,6 +192,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     uint64_t accumulatorMs = 0;
     bool running = true;
     bool simulationStartedLogged = false;
+#if PACMAN_HOSTED_DANGER_TEST
+    uint32_t hostedDangerPlacementCount = 0;
+#endif
 
     while (running) {
         gx_event event;
@@ -240,7 +257,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         uint32_t updates = 0;
         while (accumulatorMs >= kFixedStepMs && updates < kMaxCatchUpSteps) {
 #if PACMAN_HOSTED_DANGER_TEST
-            apply_hosted_danger_test_placement(&game);
+            if (apply_hosted_danger_test_placement(&game, &hostedDangerPlacementCount)) {
+                log_game_value(ctx, "PacMan hosted danger overlap placed: ", hostedDangerPlacementCount);
+            }
 #endif
             game_update(&game);
             accumulatorMs -= kFixedStepMs;

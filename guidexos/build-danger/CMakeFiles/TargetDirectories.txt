@@ -1,4 +1,4 @@
-D:/dev/pacman/guidexos/build-danger/CMakeFiles/pacman-native.dir
+D:/dev/pacman/guidexos/build-danger/CMakeFiles/pacman-danger-validation.dir
 D:/dev/pacman/guidexos/build-danger/CMakeFiles/pacman-game-tests.dir
 D:/dev/pacman/guidexos/build-danger/CMakeFiles/edit_cache.dir
 D:/dev/pacman/guidexos/build-danger/CMakeFiles/rebuild_cache.dir
