@@ -73,7 +73,7 @@ add_custom_command(OUTPUT "${GUIDEXOS_LEVEL_OBJECT}"
 )
 add_custom_command(OUTPUT "${GUIDEXOS_RENDERER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/renderer.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_RENDERER_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DANGER_TEST_DEFINITION} -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/renderer.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_RENDERER_OBJECT}"
     DEPENDS src/renderer.cpp src/game.h src/game_types.h src/game_state.h src/renderer.h src/level.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_LOADER_OBJECT}"

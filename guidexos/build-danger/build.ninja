@@ -176,7 +176,7 @@ build native-objects/main.o | ${cmake_ninja_workdir}native-objects/main.o: CUSTO
 # Custom command for native-objects\renderer.o
 
 build native-objects/renderer.o | ${cmake_ninja_workdir}native-objects/renderer.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/renderer.cpp D$:/dev/pacman/guidexos/src/game.h D$:/dev/pacman/guidexos/src/game_types.h D$:/dev/pacman/guidexos/src/game_state.h D$:/dev/pacman/guidexos/src/renderer.h D$:/dev/pacman/guidexos/src/level.h
-  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-danger && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/build-danger/native-objects && "C:\Program Files\LLVM\bin\clang++.exe" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c D:/dev/pacman/guidexos/src/renderer.cpp -I"D:/dev/guideXOSServer/sdk/include" -I"D:/dev/pacman/guidexos/src" -o D:/dev/pacman/guidexos/build-danger/native-objects/renderer.o"
+  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-danger && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/build-danger/native-objects && "C:\Program Files\LLVM\bin\clang++.exe" --target=x86_64-unknown-elf -DPACMAN_HOSTED_DANGER_TEST=1 -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c D:/dev/pacman/guidexos/src/renderer.cpp -I"D:/dev/guideXOSServer/sdk/include" -I"D:/dev/pacman/guidexos/src" -o D:/dev/pacman/guidexos/build-danger/native-objects/renderer.o"
   DESC = Generating native-objects/renderer.o
   restat = 1
 

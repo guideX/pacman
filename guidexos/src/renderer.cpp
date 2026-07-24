@@ -192,7 +192,7 @@ bool build_background_frame(const PacImage* level, uint32_t* backgroundPixels, u
 }
 
 bool render_game_scene(const PacImage* sprites, const GameState* game, const uint32_t* backgroundPixels,
-                       uint32_t* framePixels, uint32_t framePixelCount) {
+                       uint32_t* framePixels, uint32_t framePixelCount, uint64_t validationFrameSequence) {
     const uint32_t requiredPixels = static_cast<uint32_t>(kPacManWidth * kPacManFrameHeight);
     if (!sprites || !sprites->pixels || !game || !backgroundPixels || !valid_frame(framePixels, framePixelCount) ||
         sprites->width < 256 || sprites->height < 352 || sprites->width > 0xFFFFFFFFu / 4u ||
@@ -223,6 +223,19 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
     } else if (game->playState == PlayState::GameOver) {
         draw_text(framePixels, 170, 270, "GAME OVER", 0x00FF4040u, 2);
     }
+#if PACMAN_HOSTED_DANGER_TEST
+    // Test-only identity marker. It is drawn into the same XRGB8888 frame as
+    // the game and is intentionally kept in the otherwise unused right side
+    // of the status strip. Production builds do not compile this path.
+    char markerState[2] = {'P', '\0'};
+    if (game->playState == PlayState::Dying) markerState[0] = 'D';
+    else if (game->playState == PlayState::ReadyAfterDeath) markerState[0] = 'R';
+    else if (game->playState == PlayState::GameOver) markerState[0] = 'G';
+    draw_text(framePixels, 394, 10, markerState, 0x0000FFFFu, 1);
+    draw_number(framePixels, 406, 10, static_cast<uint32_t>(validationFrameSequence), 0x0000FFFFu, 1);
+#else
+    (void)validationFrameSequence;
+#endif
     (void)requiredPixels;
     return true;
 }

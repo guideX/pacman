@@ -52,6 +52,9 @@ struct GhostState {
     int x;
     int y;
     Direction direction;
+    Direction requestedDirection;
+    int offset;
+    int speed;
     uint8_t animationFrame;
     bool active;
 };
@@ -78,6 +81,7 @@ struct GameState {
     bool turnAccepted;
     bool becameBlocked;
     bool tunnelWrapped;
+    bool redTunnelWrapped;
     bool normalPillConsumed;
     bool powerPillConsumed;
     bool scoreChanged;

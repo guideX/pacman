@@ -43,11 +43,10 @@ public static class PacManDangerCapture5 {
         using (Bitmap bitmap = new Bitmap(width, height))
         using (Graphics graphics = Graphics.FromImage(bitmap)) {
             SetForegroundWindow(hwnd);
-            IntPtr hdc = graphics.GetHdc();
-            bool printed;
-            try { printed = PrintWindow(hwnd, hdc, 2); }
-            finally { graphics.ReleaseHdc(hdc); }
-            if (!printed) return false;
+            // gui.sync has already completed the compositor WM_PAINT. Capture
+            // the visible hosted HWND surface so this helper cannot reuse
+            // PrintWindow's older backing result.
+            graphics.CopyFromScreen(new Point(rect.Left, rect.Top), Point.Empty, bitmap.Size);
             bitmap.Save(path, ImageFormat.Png);
         }
         return true;
@@ -70,6 +69,8 @@ $process = $null
 $compositor = [IntPtr]::Zero
 $launchCount = 0
 $failed = $false
+$previousFrameDiagnostics = [Environment]::GetEnvironmentVariable('GXOS_PACMAN_FRAME_DIAGNOSTICS', 'Process')
+$previousFreezeDiagnostics = [Environment]::GetEnvironmentVariable('GXOS_COMPOSITOR_FREEZE_DIAGNOSTICS', 'Process')
 
 function Get-ServerProcesses {
     $paths = @($serverExe, $normalServerExe)
@@ -126,6 +127,126 @@ function Get-LogCount([string]$pattern) {
     return [regex]::Matches((Read-RawLog), $pattern).Count
 }
 
+function Convert-FrameMatch([System.Text.RegularExpressions.Match]$match) {
+    if (-not $match.Success) { return $null }
+    return [pscustomobject]@{
+        Sequence = [uint64]$match.Groups[1].Value
+        WindowId = [uint64]$match.Groups[2].Value
+        State = $match.Groups[3].Value
+        Step = [uint64]$match.Groups[4].Value
+        Score = [uint32]$match.Groups[5].Value
+        Lives = [uint32]$match.Groups[6].Value
+        Level = [uint32]$match.Groups[7].Value
+        X = [int]$match.Groups[8].Value
+        Y = [int]$match.Groups[9].Value
+        Width = [int]$match.Groups[10].Value
+        Height = [int]$match.Groups[11].Value
+        Stride = [uint32]$match.Groups[12].Value
+        Bytes = [uint32]$match.Groups[13].Value
+        Result = [uint32]$match.Groups[14].Value
+        ObservedAtUtc = [DateTime]::UtcNow
+    }
+}
+
+function Get-LatestCompositorFrameSequence {
+    $matches = [regex]::Matches((Read-RawLog), 'Compositor frame replaced windowId=(\d+) incomingFrameSeq=(\d+) frameGeneration=(\d+)')
+    if ($matches.Count -eq 0) { return [uint64]0 }
+    return [uint64]$matches[$matches.Count - 1].Groups[2].Value
+}
+
+function Get-LatestValidationFrame([string]$state, [uint64]$minimumSequence = 0, [int]$score = -1, [int]$lives = -1, [uint64]$maximumSequence = 0) {
+    $pattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+)'
+    $matches = [regex]::Matches((Read-RawLog), $pattern)
+    for ($i = $matches.Count - 1; $i -ge 0; --$i) {
+        $frame = Convert-FrameMatch $matches[$i]
+        if ($frame.State -ne $state -or $frame.Sequence -le $minimumSequence -or $frame.Result -ne 0) { continue }
+        if ($maximumSequence -gt 0 -and $frame.Sequence -gt $maximumSequence) { continue }
+        if ($score -ge 0 -and $frame.Score -ne $score) { continue }
+        if ($lives -ge 0 -and $frame.Lives -ne $lives) { continue }
+        return $frame
+    }
+    return $null
+}
+
+function Wait-ForValidationFrame([string]$state, [uint64]$minimumSequence = 0, [int]$score = -1, [int]$lives = -1, [int]$timeoutMs = 12000, [bool]$requireCompositorBound = $true) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
+    do {
+        # A new logical session can legitimately be ahead of the previous
+        # compositor generation. Register the sync barrier for that future
+        # frame instead of filtering it out using the old generation.
+        $maximumSequence = if ($requireCompositorBound) { Get-LatestCompositorFrameSequence } else { [uint64]0 }
+        $frame = Get-LatestValidationFrame $state $minimumSequence $score $lives $maximumSequence
+        if ($null -ne $frame) { return $frame }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $null
+}
+
+function Get-ValidationFrameBySequence([uint64]$sequence) {
+    $pattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+)'
+    $matches = [regex]::Matches((Read-RawLog), $pattern)
+    for ($i = $matches.Count - 1; $i -ge 0; --$i) {
+        $frame = Convert-FrameMatch $matches[$i]
+        if ($frame.Sequence -eq $sequence -and $frame.Result -eq 0) { return $frame }
+    }
+    return $null
+}
+
+function Get-FrameBoundary([uint64]$windowId, [uint64]$sequence) {
+    $pattern = "Native ELF frame boundary runtimeId=(\d+) windowId=$windowId incomingFrameSeq=$sequence width=(\d+) height=(\d+) stride=(\d+) format=(\d+) bytes=(\d+) validation=PASS presentation=PASS result=0"
+    $matches = [regex]::Matches((Read-RawLog), $pattern)
+    if ($matches.Count -eq 0) { return $null }
+    $match = $matches[$matches.Count - 1]
+    return [pscustomobject]@{
+        RuntimeId = [uint64]$match.Groups[1].Value
+        Width = [int]$match.Groups[2].Value
+        Height = [int]$match.Groups[3].Value
+        Stride = [uint32]$match.Groups[4].Value
+        Format = [uint32]$match.Groups[5].Value
+        Bytes = [uint32]$match.Groups[6].Value
+    }
+}
+
+function Wait-ForFrameLifecycle([pscustomobject]$frame, [int]$timeoutMs = 12000) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
+    do {
+        $boundary = Get-FrameBoundary $frame.WindowId $frame.Sequence
+        $replacementPattern = "Compositor frame replaced windowId=$($frame.WindowId) incomingFrameSeq=$($frame.Sequence) frameGeneration=(\d+) storedBytes=(\d+) width=(\d+) height=(\d+) stride=(\d+) format=(\d+) validation=PASS"
+        $replacement = [regex]::Matches((Read-RawLog), $replacementPattern)
+        if ($null -ne $boundary -and $replacement.Count -gt 0) {
+            $match = $replacement[$replacement.Count - 1]
+            return [pscustomobject]@{ Frame = $frame; Boundary = $boundary; FrameGeneration = [uint64]$match.Groups[1].Value }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $null
+}
+
+function Sync-HostedFrame([pscustomobject]$frame, [int]$timeoutMs = 8000) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
+    $pattern = "Compositor frame sync windowId=$($frame.WindowId) expectedFrameGeneration=0 expectedFrameSequence=$($frame.Sequence) frameSequence=(\d+) frameGeneration=(\d+) paintGeneration=(\d+) captureGeneration=(\d+).* result=PASS"
+    $nextRetry = [DateTime]::UtcNow
+    do {
+        if ([DateTime]::UtcNow -ge $nextRetry) {
+            Send-ServerCommand "gui.sync $($frame.WindowId) 0 $($frame.Sequence) 1"
+            $nextRetry = [DateTime]::UtcNow.AddMilliseconds(1000)
+        }
+        Start-Sleep -Milliseconds 100
+        $raw = Read-RawLog
+        $syncMatches = [regex]::Matches($raw, $pattern)
+        if ($syncMatches.Count -gt 0) {
+            $match = $syncMatches[$syncMatches.Count - 1]
+            return [pscustomobject]@{
+                FrameSequence = [uint64]$match.Groups[1].Value
+                FrameGeneration = [uint64]$match.Groups[2].Value
+                PaintGeneration = [uint64]$match.Groups[3].Value
+                CaptureGeneration = [uint64]$match.Groups[4].Value
+            }
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $null
+}
+
 function Wait-ForAdditionalLogCount([string]$pattern, [int]$baselineCount, [int]$additionalCount, [int]$timeoutMs = 12000) {
     $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
     $targetCount = $baselineCount + $additionalCount
@@ -174,12 +295,41 @@ function Send-Key([int]$key, [int]$durationMs = 100) {
     Start-Sleep -Milliseconds 80
 }
 
-function Capture-Hosted([string]$label) {
-    $path = Join-Path $captureDirectory "pacman-danger-$runId-$label.png"
-    if (-not [PacManDangerCapture5]::CaptureCompositor($path, $compositor)) {
-        throw "Failed to capture the owned guideXOS compositor window for $label."
+function Capture-Hosted([string]$label, [string]$state, [uint64]$minimumSequence = 0, [int]$score = -1, [int]$lives = -1, [bool]$allowFrameAheadOfCompositor = $false) {
+    $frame = Wait-ForValidationFrame $state $minimumSequence $score $lives 12000 (-not $allowFrameAheadOfCompositor)
+    if ($null -eq $frame) { throw "No fresh PacMan $state frame was logged for capture $label." }
+    $freezeRequested = $true
+    try {
+        $sync = Sync-HostedFrame $frame 8000
+        if ($null -eq $sync) { throw "Frame lifecycle did not reach compositor paint for $label seq=$($frame.Sequence)." }
+        $lifecycle = Wait-ForFrameLifecycle $frame 12000
+        if ($null -eq $lifecycle) { throw "Frame lifecycle did not reach host/compositor replacement for $label seq=$($frame.Sequence)." }
+        $paintedFrame = Get-ValidationFrameBySequence $sync.FrameSequence
+        if ($null -eq $paintedFrame) { throw "No application frame record matched painted generation $($sync.FrameGeneration) for $label." }
+        if ($paintedFrame.State -ne $state -or ($score -ge 0 -and $paintedFrame.Score -ne $score) -or ($lives -ge 0 -and $paintedFrame.Lives -ne $lives)) {
+            throw "Painted generation $($sync.FrameGeneration) belongs to state=$($paintedFrame.State) score=$($paintedFrame.Score) lives=$($paintedFrame.Lives), not requested state=$state score=$score lives=$lives for $label."
+        }
+
+        $path = Join-Path $captureDirectory "pacman-danger-$runId-$label-seq$($paintedFrame.Sequence)-gen$($sync.FrameGeneration).png"
+        if (Test-Path -LiteralPath $path) { throw "Capture output already exists and was not intentionally replaced: $path" }
+        $captureTimestamp = [DateTime]::UtcNow
+        if ($captureTimestamp -lt $frame.ObservedAtUtc) { throw "Capture timestamp predates the expected state frame for $label." }
+        if (-not [PacManDangerCapture5]::CaptureCompositor($path, $compositor)) {
+            throw "Failed to capture the owned guideXOS compositor window for $label."
+        }
+        $rect = [PacManDangerCapture5+RECT]::new()
+        if (-not [PacManDangerCapture5]::GetWindowRect($compositor, [ref]$rect)) { throw "Hosted compositor HWND disappeared during $label capture." }
+        $windowWidth = $rect.Right - $rect.Left
+        $windowHeight = $rect.Bottom - $rect.Top
+        $hwndText = '0x' + $compositor.ToInt64().ToString('X')
+        $results.Add("capture=$path")
+        $results.Add("capture-target appId=com.guidexos.pacman.danger-validation runtimeId=$($lifecycle.Boundary.RuntimeId) windowId=$($paintedFrame.WindowId) hostedHwnd=$hwndText title=guideXOSCpp Compositor dimensions=$($windowWidth)x$($windowHeight) frameGeneration=$($sync.FrameGeneration) paintGeneration=$($sync.PaintGeneration) captureGeneration=$($sync.CaptureGeneration) frameSequence=$($paintedFrame.Sequence) state=$($paintedFrame.State) score=$($paintedFrame.Score) lives=$($paintedFrame.Lives) level=$($paintedFrame.Level) filename=$path timestampUtc=$($captureTimestamp.ToString('o'))")
     }
-    $results.Add("capture=$path")
+    finally {
+        if ($freezeRequested) {
+            try { Send-ServerCommand "gui.unfreeze $($frame.WindowId)" } catch {}
+        }
+    }
 }
 
 function Launch-DangerPacMan {
@@ -230,6 +380,8 @@ try {
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    $env:GXOS_PACMAN_FRAME_DIAGNOSTICS = '1'
+    $env:GXOS_COMPOSITOR_FREEZE_DIAGNOSTICS = '1'
     $process = [Process]::new()
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'Failed to start the experimental guideXOS Server wrapper.' }
@@ -259,27 +411,26 @@ try {
 
     $collisionBaseline = Get-LogCount 'PacMan ghost collision detected'
     $lifeTwoBaseline = Get-LogCount 'PacMan life decremented; lives remaining: 2'
+    $deathBaseline = Get-LogCount 'PacMan death state entered'
     Launch-DangerPacMan
-    Capture-Hosted 'playing'
+    Capture-Hosted 'playing' 'Playing' 0 -1 3
     $noEarlyCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 350
     $results.Add("cycle=1 no-automatic-collision-before-schedule=$noEarlyCollision")
 
     $collision1 = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 1 5000
     $results.Add("cycle=1 collision=$collision1")
     if (-not $collision1) { throw 'Danger validation did not detect the first deterministic collision.' }
-    Start-Sleep -Milliseconds 350
-    Capture-Hosted 'dying'
-    $death = (Get-LogCount 'PacMan death state entered') -ge 1
+    $death = (Get-LogCount 'PacMan death state entered') -ge ($deathBaseline + 1)
     $life = (Get-LogCount 'PacMan life decremented; lives remaining: 2') -eq ($lifeTwoBaseline + 1)
-    $duplicateSuppressed = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' ($collisionBaseline + 1) 350
+    $duplicateSuppressed = Wait-ForNoAdditionalLogCount 'PacMan death state entered' ($deathBaseline + 1) 350
+    Capture-Hosted 'dying' 'Dying' 0 -1 2
     $results.Add("cycle=1 dying=$death lives-decremented-once=$life duplicate-death-suppressed=$duplicateSuppressed")
 
     $resetBaseline = Get-LogCount 'PacMan actors reset after death'
     $actorReset = Wait-ForAdditionalLogCount 'PacMan actors reset after death' $resetBaseline 1 3000
-    Start-Sleep -Milliseconds 350
-    Capture-Hosted 'ready'
     $readyCollisionBaseline = Get-LogCount 'PacMan ghost collision detected'
     $readySafe = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $readyCollisionBaseline 350
+    Capture-Hosted 'ready' 'Ready' 0 -1 2
     $results.Add("cycle=1 actor-reset=$actorReset ready-collision-free-window=$readySafe")
     if (-not ($death -and $life -and $duplicateSuppressed -and $actorReset -and $readySafe)) {
         throw 'Danger validation did not preserve the bounded death and Ready-after-death transition.'
@@ -287,15 +438,16 @@ try {
 
     $collisionB = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 2 8000
     $collisionC = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 3 8000
-    $gameOverBaseline = Get-LogCount 'PacMan Game Over entered'
     $lifeZero = (Get-LogCount 'PacMan life decremented; lives remaining: 0') -ge 1
-    $gameOver = Wait-ForAdditionalLogCount 'PacMan Game Over entered' $gameOverBaseline 1 8000
+    $gameOver = Wait-ForLog 'PacMan Game Over entered' 1000
     $results.Add("cycle=1 collisions=$($collision1 -and $collisionB -and $collisionC) game-over=$gameOver lives-zero=$lifeZero")
     if (-not ($collision1 -and $collisionB -and $collisionC -and $gameOver -and $lifeZero)) {
         throw 'Danger validation did not reach Game Over after three bounded collisions.'
     }
-    Start-Sleep -Milliseconds 500
-    Capture-Hosted 'game-over'
+    Capture-Hosted 'game-over' 'GameOver' 0 -1 0
+    $restartFrameBaseline = [uint64]0
+    $latestBeforeRestart = Get-LatestValidationFrame 'GameOver' 0 -1 0
+    if ($null -ne $latestBeforeRestart) { $restartFrameBaseline = $latestBeforeRestart.Sequence }
     $restart = $false
     for ($attempt = 1; $attempt -le 3 -and -not $restart; ++$attempt) {
         Send-Key 39 80
@@ -304,8 +456,7 @@ try {
     }
     $results.Add("cycle=1 restart=$restart")
     if (-not $restart) { throw 'Enter did not restart the Game Over session.' }
-    Start-Sleep -Milliseconds 700
-    Capture-Hosted 'restart'
+    Capture-Hosted 'restart' 'Playing' $restartFrameBaseline 0 3 $true
     Escape-And-Wait 1
 
     Send-ServerCommand 'nativeapp.processes'
@@ -344,6 +495,8 @@ finally {
         $failed = $true
         $results.Add("cleanup-error=$($_.Exception.Message)")
     }
+    if ($null -eq $previousFrameDiagnostics) { Remove-Item Env:GXOS_PACMAN_FRAME_DIAGNOSTICS -ErrorAction SilentlyContinue } else { $env:GXOS_PACMAN_FRAME_DIAGNOSTICS = $previousFrameDiagnostics }
+    if ($null -eq $previousFreezeDiagnostics) { Remove-Item Env:GXOS_COMPOSITOR_FREEZE_DIAGNOSTICS -ErrorAction SilentlyContinue } else { $env:GXOS_COMPOSITOR_FREEZE_DIAGNOSTICS = $previousFreezeDiagnostics }
     [File]::WriteAllLines($summaryPath, [string[]]$results)
     $results | ForEach-Object { $_ }
 }

@@ -25,6 +25,7 @@ static uint32_t g_levelPixels[kPacManWidth * kPacManMazeHeight];
 static uint32_t g_spritePixels[256 * 352];
 static uint32_t g_backgroundPixels[kPacManWidth * kPacManFrameHeight];
 static uint32_t g_framePixels[kPacManWidth * kPacManFrameHeight];
+static uint64_t g_frameSequence = 0;
 
 static const uint64_t kFixedStepMs = 10u;
 static const uint64_t kMaxElapsedMs = 250u;
@@ -50,11 +51,73 @@ static gx_result present(gx_app_context* ctx, gx_handle window) {
         kPacManWidth * kPacManFrameHeight * 4u);
 }
 
+#if PACMAN_HOSTED_DANGER_TEST
+static void append_frame_text(char* message, uint32_t* index, uint32_t capacity, const char* text) {
+    if (!message || !index || !text) return;
+    for (uint32_t i = 0; text[i] && *index + 1u < capacity; ++i) message[(*index)++] = text[i];
+}
+
+static void append_frame_number(char* message, uint32_t* index, uint32_t capacity, uint64_t value) {
+    char digits[20];
+    uint32_t length = 0;
+    do {
+        digits[length++] = static_cast<char>('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0 && length < sizeof(digits));
+    while (length > 0 && *index + 1u < capacity) message[(*index)++] = digits[--length];
+}
+
+static const char* validation_state_name(PlayState state) {
+    switch (state) {
+    case PlayState::Playing: return "Playing";
+    case PlayState::Dying: return "Dying";
+    case PlayState::ReadyAfterDeath: return "Ready";
+    case PlayState::LevelComplete: return "LevelComplete";
+    case PlayState::GameOver: return "GameOver";
+    }
+    return "Unknown";
+}
+
+static void log_validation_frame(gx_app_context* ctx, gx_handle window, const GameState& game,
+                                 uint64_t frameSequence, gx_result result) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    char message[320];
+    uint32_t index = 0;
+    append_frame_text(message, &index, sizeof(message), "PacMan frame seq=");
+    append_frame_number(message, &index, sizeof(message), frameSequence);
+    append_frame_text(message, &index, sizeof(message), " window=");
+    append_frame_number(message, &index, sizeof(message), window);
+    append_frame_text(message, &index, sizeof(message), " state=");
+    append_frame_text(message, &index, sizeof(message), validation_state_name(game.playState));
+    append_frame_text(message, &index, sizeof(message), " step=");
+    append_frame_number(message, &index, sizeof(message), game.simulationSteps);
+    append_frame_text(message, &index, sizeof(message), " score=");
+    append_frame_number(message, &index, sizeof(message), game.score);
+    append_frame_text(message, &index, sizeof(message), " lives=");
+    append_frame_number(message, &index, sizeof(message), game.lives);
+    append_frame_text(message, &index, sizeof(message), " level=");
+    append_frame_number(message, &index, sizeof(message), game.levelNumber);
+    append_frame_text(message, &index, sizeof(message), " pacman=");
+    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.pacman.x));
+    append_frame_text(message, &index, sizeof(message), ",");
+    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.pacman.y));
+    append_frame_text(message, &index, sizeof(message), " size=448x553 stride=1792 bytes=990976 result=");
+    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(static_cast<uint32_t>(result)));
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+}
+#endif
+
 static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacImage& sprites,
                               const GameState& game) {
+    const uint64_t frameSequence = ++g_frameSequence;
     if (!render_game_scene(&sprites, &game, g_backgroundPixels, g_framePixels,
-                           kPacManWidth * kPacManFrameHeight)) return false;
-    return present(ctx, window) == GX_OK;
+                           kPacManWidth * kPacManFrameHeight, frameSequence)) return false;
+    const gx_result result = present(ctx, window);
+#if PACMAN_HOSTED_DANGER_TEST
+    log_validation_frame(ctx, window, game, frameSequence, result);
+#endif
+    return result == GX_OK;
 }
 
 static void log_direction_request(gx_app_context* ctx, Direction direction) {
@@ -129,6 +192,8 @@ static bool apply_hosted_danger_test_placement(GameState* game, uint32_t* placem
     if (game->simulationSteps < nextPlacementStep) return false;
     game->ghosts[0].x = game->pacman.x;
     game->ghosts[0].y = game->pacman.y;
+    game->ghosts[0].offset = 0;
+    game->ghosts[0].speed = 0;
     game->ghosts[0].active = true;
     game->visualDirty = true;
     ++*placementCount;
@@ -158,7 +223,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     GameState game;
     game_initialize(&game);
 #if PACMAN_ENABLE_DIAGNOSTICS
-    ctx->host->log(ctx, "PacMan ghosts initialized: 4 stationary entities");
+    ctx->host->log(ctx, "PacMan ghosts initialized: Red moving; 3 stationary entities");
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
         const GhostState& ghost = game.ghosts[index];
         ctx->host->log(ctx, ghost_kind_name(ghost.kind));
@@ -202,9 +267,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         gx_result eventResult = ctx->host->poll_event(ctx, &event, 10);
         if (eventResult == GX_OK && event.window == window) {
             if (gx_event_is_paint(&event)) {
-                if (!render_and_present(ctx, window, sprites, game)) running = false;
-                game.visualDirty = false;
-                lastPresentedTicks = gx_get_ticks_ms(ctx);
+                if (game.visualDirty) {
+                    if (!render_and_present(ctx, window, sprites, game)) running = false;
+                    game.visualDirty = false;
+                    lastPresentedTicks = gx_get_ticks_ms(ctx);
+                }
             } else if (gx_event_is_close(&event)) {
                 ctx->host->log(ctx, "PacMan close event received");
                 running = false;
@@ -271,6 +338,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (game.turnAccepted) ctx->host->log(ctx, "PacMan buffered turn accepted");
             if (game.becameBlocked) ctx->host->log(ctx, "PacMan direction blocked by maze wall");
             if (game.tunnelWrapped) ctx->host->log(ctx, "PacMan tunnel wrap");
+            if (game.redTunnelWrapped) ctx->host->log(ctx, "PacMan Red ghost tunnel wrap");
             log_game_events(ctx, game);
         }
         if (updates == kMaxCatchUpSteps && accumulatorMs >= kFixedStepMs) {

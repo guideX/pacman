@@ -253,6 +253,61 @@ bool test_completion_reset_and_overflow() {
     return ok;
 }
 
+bool test_red_ghost_movement() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    game.pacman.x = 64;
+    game.pacman.y = 376;
+    game.pacman.direction = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    const int pinkX = game.ghosts[1].x;
+    const int pinkY = game.ghosts[1].y;
+    const int cyanX = game.ghosts[2].x;
+    const int cyanY = game.ghosts[2].y;
+    const int orangeX = game.ghosts[3].x;
+    const int orangeY = game.ghosts[3].y;
+
+    game_update(&game);
+    ok &= expect(game.ghosts[0].x == 223 && game.ghosts[0].y == 184 &&
+                 game.ghosts[0].direction == Direction::Left,
+                 "Red ghost takes its legal initial direction");
+    for (uint32_t step = 0; step < 15; ++step) game_update(&game);
+    ok &= expect(game.ghosts[0].x == 208 && game.ghosts[0].offset == 0,
+                 "Red ghost reaches the next maze intersection on grid alignment");
+
+    game.pacman.x = 208;
+    game.pacman.y = 24;
+    game_update(&game);
+    ok &= expect(game.ghosts[0].direction == Direction::Up && game.ghosts[0].y == 183,
+                 "Red ghost chooses a target-directed legal turn at an intersection");
+    for (uint32_t step = 0; step < 80; ++step) {
+        game_update(&game);
+        const int column = level_column_from_position(game.ghosts[0].x);
+        const int row = level_row_from_position(game.ghosts[0].y);
+        ok &= expect(is_walkable_cell(level_cell(game.level, column, row)),
+                     "Red ghost remains inside walkable maze cells");
+    }
+
+    game.ghosts[0].x = 16;
+    game.ghosts[0].y = 232;
+    game.ghosts[0].direction = Direction::Left;
+    game.ghosts[0].requestedDirection = Direction::Left;
+    game.ghosts[0].offset = 0;
+    game.ghosts[0].speed = 1;
+    game.pacman.x = 208;
+    game.pacman.y = 376;
+    game_update(&game);
+    ok &= expect(game.ghosts[0].x == 431 && game.ghosts[0].y == 232 &&
+                 game.redTunnelWrapped,
+                 "Red ghost uses the historical tunnel wrap");
+    ok &= expect(game.ghosts[1].x == pinkX && game.ghosts[1].y == pinkY &&
+                 game.ghosts[2].x == cyanX && game.ghosts[2].y == cyanY &&
+                 game.ghosts[3].x == orangeX && game.ghosts[3].y == orangeY,
+                 "Pink Cyan and Orange remain stationary");
+    return ok;
+}
+
 bool test_ghost_layout_and_collision() {
     bool ok = true;
     GameState game{};
@@ -325,6 +380,7 @@ void place_stationary_collision(GameState* game, GhostKind kind) {
     game->pacman.direction = Direction::None;
     game->pacman.requestedDirection = Direction::None;
     game->pacman.speed = 1;
+    game->ghosts[index].speed = 0;
 }
 
 bool test_death_lives_and_reset() {
@@ -441,6 +497,7 @@ int main() {
     ok &= test_power_pill_and_duplicate_prevention();
     ok &= test_buffered_turn_and_tunnel_counts();
     ok &= test_completion_reset_and_overflow();
+    ok &= test_red_ghost_movement();
     ok &= test_ghost_layout_and_collision();
     ok &= test_death_lives_and_reset();
     ok &= test_game_over_and_restart();

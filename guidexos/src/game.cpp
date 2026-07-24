@@ -48,6 +48,13 @@ static int next_offset(int offset, Direction direction, int speed) {
     return result;
 }
 
+static bool is_reverse_direction(Direction direction, Direction current) {
+    return (direction == Direction::Left && current == Direction::Right) ||
+        (direction == Direction::Right && current == Direction::Left) ||
+        (direction == Direction::Up && current == Direction::Down) ||
+        (direction == Direction::Down && current == Direction::Up);
+}
+
 static void reset_pacman(PacManState* pacman) {
     if (!pacman) return;
     pacman->x = 224;
@@ -71,6 +78,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[0].x = 224;
     ghosts[0].y = 184;
     ghosts[0].direction = Direction::Left;
+    ghosts[0].requestedDirection = Direction::Left;
+    ghosts[0].offset = 0;
+    ghosts[0].speed = 1;
     ghosts[0].animationFrame = 0;
     ghosts[0].active = true;
 
@@ -78,6 +88,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[1].x = 192;
     ghosts[1].y = 224;
     ghosts[1].direction = Direction::Up;
+    ghosts[1].requestedDirection = Direction::Up;
+    ghosts[1].offset = 0;
+    ghosts[1].speed = 0;
     ghosts[1].animationFrame = 0;
     ghosts[1].active = true;
 
@@ -85,6 +98,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[2].x = 224;
     ghosts[2].y = 240;
     ghosts[2].direction = Direction::Down;
+    ghosts[2].requestedDirection = Direction::Down;
+    ghosts[2].offset = 0;
+    ghosts[2].speed = 0;
     ghosts[2].animationFrame = 0;
     ghosts[2].active = true;
 
@@ -92,6 +108,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[3].x = 256;
     ghosts[3].y = 224;
     ghosts[3].direction = Direction::Up;
+    ghosts[3].requestedDirection = Direction::Up;
+    ghosts[3].offset = 0;
+    ghosts[3].speed = 0;
     ghosts[3].animationFrame = 0;
     ghosts[3].active = true;
 }
@@ -155,6 +174,84 @@ static bool pacman_hits_any_ghost(const GameState& game) {
     return false;
 }
 
+static int red_target_distance(const GhostState& red, const PacManState& pacman,
+                               Direction direction) {
+    int targetX = red.x + direction_x(direction) * kPacManTileSize;
+    int targetY = red.y + direction_y(direction) * kPacManTileSize;
+    int deltaX = absolute_value(targetX - pacman.x);
+    const int redRow = level_row_from_position(red.y);
+    const int pacmanRow = level_row_from_position(pacman.y);
+    if (redRow == kPacManTunnelRow && pacmanRow == kPacManTunnelRow && deltaX > 208) {
+        deltaX = 416 - deltaX;
+    }
+    return deltaX + absolute_value(targetY - pacman.y);
+}
+
+static Direction choose_red_direction(const GameState& game, const GhostState& red) {
+    static const Direction candidates[] = {
+        Direction::Up, Direction::Left, Direction::Down, Direction::Right
+    };
+    bool hasNonReverse = false;
+    for (uint32_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); ++index) {
+        if (!is_reverse_direction(candidates[index], red.direction) &&
+            can_move(game, red.x, red.y, candidates[index])) {
+            hasNonReverse = true;
+            break;
+        }
+    }
+
+    Direction bestDirection = Direction::None;
+    int bestDistance = 0x7FFFFFFF;
+    for (uint32_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); ++index) {
+        const Direction candidate = candidates[index];
+        if (!can_move(game, red.x, red.y, candidate)) continue;
+        if (hasNonReverse && is_reverse_direction(candidate, red.direction)) continue;
+        const int distance = red_target_distance(red, game.pacman, candidate);
+        if (bestDirection == Direction::None || distance < bestDistance) {
+            bestDirection = candidate;
+            bestDistance = distance;
+        }
+    }
+    return bestDirection;
+}
+
+static void update_red_ghost(GameState* game) {
+    if (!game) return;
+    GhostState& red = game->ghosts[0];
+    if (!red.active || red.speed <= 0) return;
+
+    if (red.offset == 0) {
+        const Direction selected = choose_red_direction(*game, red);
+        if (selected != Direction::None) {
+            red.requestedDirection = selected;
+            if (red.direction != selected) {
+                red.direction = selected;
+                game->visualDirty = true;
+            }
+        } else {
+            red.direction = Direction::None;
+        }
+    }
+
+    if (red.direction == Direction::None || !can_move(*game, red.x, red.y, red.direction)) return;
+    const int oldX = red.x;
+    const int oldY = red.y;
+    red.x += direction_x(red.direction) * red.speed;
+    red.y += direction_y(red.direction) * red.speed;
+    red.offset = next_offset(red.offset, red.direction, red.speed);
+    if (is_horizontal(red.direction) && is_tunnel_row(level_row_from_position(red.y))) {
+        if (red.x > 416) {
+            red.x -= 416;
+            game->redTunnelWrapped = true;
+        } else if (red.x < 16) {
+            red.x += 416;
+            game->redTunnelWrapped = true;
+        }
+    }
+    red.animationFrame = static_cast<uint8_t>((red.animationFrame + 1u) % 2u);
+    if (oldX != red.x || oldY != red.y) game->visualDirty = true;
+}
+
 static void enter_dying(GameState* game) {
     if (!game || game->playState != PlayState::Playing) return;
 
@@ -199,8 +296,10 @@ static void update_dying(GameState* game) {
 static void update_ready_after_death(GameState* game) {
     if (!game) return;
     if (game->readyStepsRemaining > 0) --game->readyStepsRemaining;
-    game->visualDirty = true;
-    if (game->readyStepsRemaining == 0) game->playState = PlayState::Playing;
+    if (game->readyStepsRemaining == 0) {
+        game->playState = PlayState::Playing;
+        game->visualDirty = true;
+    }
 }
 
 }
@@ -241,6 +340,7 @@ void game_initialize(GameState* game) {
     game->turnAccepted = false;
     game->becameBlocked = false;
     game->tunnelWrapped = false;
+    game->redTunnelWrapped = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -298,6 +398,7 @@ bool game_restart_session(GameState* game) {
     game->turnAccepted = false;
     game->becameBlocked = false;
     game->tunnelWrapped = false;
+    game->redTunnelWrapped = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -356,6 +457,7 @@ void game_update(GameState* game) {
     game->turnAccepted = false;
     game->becameBlocked = false;
     game->tunnelWrapped = false;
+    game->redTunnelWrapped = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -444,8 +546,9 @@ void game_update(GameState* game) {
     if (pacman.mouth > 2 || pacman.mouth < 1) pacman.mouthDirection = -pacman.mouthDirection;
     if (pacman.mouth != oldMouth) game->visualDirty = true;
 
-    // Ghosts are intentionally stationary in this milestone. Collision is
-    // sampled once, after Pac-Man's fixed-step movement and pill handling.
+    // Red uses a bounded historical target choice; Pink, Cyan, and Orange
+    // remain stationary. Collision is sampled after both actor updates.
+    update_red_ghost(game);
     if (pacman_hits_any_ghost(*game)) enter_dying(game);
     ++game->simulationSteps;
 }
