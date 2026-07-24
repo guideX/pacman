@@ -49,6 +49,91 @@ void keep_only_normal_target(GameState* game, int column, int row) {
     game->level.totalConsumablesRemaining = 1;
 }
 
+Direction opposite_direction(Direction direction) {
+    switch (direction) {
+    case Direction::Up: return Direction::Down;
+    case Direction::Down: return Direction::Up;
+    case Direction::Left: return Direction::Right;
+    case Direction::Right: return Direction::Left;
+    case Direction::None: return Direction::None;
+    }
+    return Direction::None;
+}
+
+int direction_x_for_test(Direction direction) {
+    return direction == Direction::Left ? -1 : direction == Direction::Right ? 1 : 0;
+}
+
+int direction_y_for_test(Direction direction) {
+    return direction == Direction::Up ? -1 : direction == Direction::Down ? 1 : 0;
+}
+
+bool is_horizontal_for_test(Direction direction) {
+    return direction == Direction::Left || direction == Direction::Right;
+}
+
+void disable_non_red_ghosts(GameState* game) {
+    if (!game) return;
+    for (uint32_t index = 1; index < kPacManGhostCount; ++index) game->ghosts[index].active = false;
+}
+
+bool find_tie_point(const GameState& game, int* x, int* y, Direction* current,
+                    Direction* expected) {
+    const Direction directions[] = {
+        Direction::Up, Direction::Down, Direction::Left, Direction::Right
+    };
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        if (row == kPacManTunnelRow) continue;
+        for (int column = 0; column < kPacManMazeColumns; ++column) {
+            if (!is_walkable_cell(level_cell(game.level, column, row))) continue;
+            const int centerX = column * kPacManTileSize + 8;
+            const int centerY = row * kPacManTileSize + 8;
+            for (uint32_t currentIndex = 0; currentIndex < 4; ++currentIndex) {
+                uint32_t legalCount = 0;
+                Direction first = Direction::None;
+                for (uint32_t index = 0; index < 4; ++index) {
+                    if (directions[index] == opposite_direction(directions[currentIndex])) continue;
+                    if (!can_move(game, centerX, centerY, directions[index])) continue;
+                    if (first == Direction::None) first = directions[index];
+                    ++legalCount;
+                }
+                if (legalCount >= 2) {
+                    if (x) *x = centerX;
+                    if (y) *y = centerY;
+                    if (current) *current = directions[currentIndex];
+                    if (expected) *expected = first;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool find_perpendicular_approach(const GameState& game, int* x, int* y,
+                                 Direction* redDirection, Direction* pacmanDirection) {
+    const Direction horizontal[] = {Direction::Left, Direction::Right};
+    const Direction vertical[] = {Direction::Up, Direction::Down};
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        for (int column = 0; column < kPacManMazeColumns; ++column) {
+            if (!is_walkable_cell(level_cell(game.level, column, row))) continue;
+            const int centerX = column * kPacManTileSize + 8;
+            const int centerY = row * kPacManTileSize + 8;
+            for (uint32_t redIndex = 0; redIndex < 2; ++redIndex) {
+                if (!can_move(game, centerX, centerY, horizontal[redIndex])) continue;
+                for (uint32_t pacmanIndex = 0; pacmanIndex < 2; ++pacmanIndex) {
+                    if (x) *x = centerX;
+                    if (y) *y = centerY;
+                    if (redDirection) *redDirection = horizontal[redIndex];
+                    if (pacmanDirection) *pacmanDirection = vertical[pacmanIndex];
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 bool test_historical_movement() {
     bool ok = true;
     GameState game{};
@@ -227,9 +312,13 @@ bool test_completion_reset_and_overflow() {
                  game.level.totalConsumablesRemaining == 244,
                  "level reset restores exact consumable counts");
     ok &= expect(game.pacman.x == 224 && game.pacman.y == 376 &&
-                 game.pacman.direction == Direction::Right && game.pacman.offset == 8 &&
-                 game.pacman.requestedDirection == Direction::Right,
-                 "level reset restores Pac-Man start state");
+                  game.pacman.direction == Direction::Right && game.pacman.offset == 8 &&
+                  game.pacman.requestedDirection == Direction::Right,
+                  "level reset restores Pac-Man start state");
+    ok &= expect(game.ghosts[0].x == 224 && game.ghosts[0].y == 184 &&
+                 game.ghosts[0].direction == Direction::Left && game.ghosts[0].targetX == 224 &&
+                 game.ghosts[0].targetY == 376,
+                 "level completion resets Red position direction and target");
     ok &= expect(!game.held.left && !game.held.right && !game.held.up && !game.held.down,
                  "level reset clears held directions");
     ok &= expect(game.levelCompleteTransitions == 1, "completion does not trigger more than once");
@@ -261,6 +350,11 @@ bool test_red_ghost_movement() {
     game.pacman.y = 376;
     game.pacman.direction = Direction::None;
     game.pacman.requestedDirection = Direction::None;
+    ok &= expect(game.ghosts[0].x == 224 && game.ghosts[0].y == 184 &&
+                 game.ghosts[0].direction == Direction::Left && game.ghosts[0].speed == 1,
+                 "Red starts at the historical position, deterministic direction, and speed");
+    ok &= expect(game.ghosts[0].targetX == 224 && game.ghosts[0].targetY == 376,
+                 "Red reset target starts at the historical Pac-Man spawn");
     const int pinkX = game.ghosts[1].x;
     const int pinkY = game.ghosts[1].y;
     const int cyanX = game.ghosts[2].x;
@@ -270,8 +364,10 @@ bool test_red_ghost_movement() {
 
     game_update(&game);
     ok &= expect(game.ghosts[0].x == 223 && game.ghosts[0].y == 184 &&
-                 game.ghosts[0].direction == Direction::Left,
-                 "Red ghost takes its legal initial direction");
+                 game.ghosts[0].direction == Direction::Left && game.ghosts[0].animationFrame == 1,
+                 "Red ghost advances one pixel per fixed step and animates independently of rendering");
+    ok &= expect(game.ghosts[0].targetX == 64 && game.ghosts[0].targetY == 376,
+                 "Red target updates to Pac-Man's current logical position");
     for (uint32_t step = 0; step < 15; ++step) game_update(&game);
     ok &= expect(game.ghosts[0].x == 208 && game.ghosts[0].offset == 0,
                  "Red ghost reaches the next maze intersection on grid alignment");
@@ -281,6 +377,10 @@ bool test_red_ghost_movement() {
     game_update(&game);
     ok &= expect(game.ghosts[0].direction == Direction::Up && game.ghosts[0].y == 183,
                  "Red ghost chooses a target-directed legal turn at an intersection");
+    ok &= expect(game.ghosts[0].targetX == 208 && game.ghosts[0].targetY == 24,
+                 "Red target follows Pac-Man's current position directly");
+    ok &= expect(choose_ghost_direction(game, game.ghosts[0], 208, 24) != Direction::Right,
+                 "Red never reverses while another legal direction exists");
     for (uint32_t step = 0; step < 80; ++step) {
         game_update(&game);
         const int column = level_column_from_position(game.ghosts[0].x);
@@ -299,12 +399,197 @@ bool test_red_ghost_movement() {
     game.pacman.y = 376;
     game_update(&game);
     ok &= expect(game.ghosts[0].x == 431 && game.ghosts[0].y == 232 &&
-                 game.redTunnelWrapped,
-                 "Red ghost uses the historical tunnel wrap");
+                  game.redTunnelWrapped,
+                  "Red ghost uses the historical tunnel wrap");
+
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    game.ghosts[0].x = 424;
+    game.ghosts[0].y = 232;
+    game.ghosts[0].direction = Direction::Right;
+    game.ghosts[0].requestedDirection = Direction::Right;
+    game.ghosts[0].offset = 0;
+    game.ghosts[0].speed = 1;
+    game.pacman.x = 208;
+    game.pacman.y = 376;
+    game_update(&game);
+    ok &= expect(game.ghosts[0].x == 9 && game.ghosts[0].y == 232 && game.redTunnelWrapped,
+                 "Red ghost wraps right-to-left through the tunnel");
+
+    game_initialize(&game);
+    game.ghosts[0].x = 16;
+    game.ghosts[0].y = 216;
+    game.ghosts[0].direction = Direction::Left;
+    game.ghosts[0].requestedDirection = Direction::Left;
+    game.ghosts[0].offset = 0;
+    game.ghosts[0].speed = 1;
+    game.pacman.x = 64;
+    game.pacman.y = 376;
+    game_update(&game);
+    ok &= expect(game.ghosts[0].x == 16 && game.ghosts[0].y == 216 && !game.redTunnelWrapped,
+                 "Red never wraps on a non-tunnel row");
     ok &= expect(game.ghosts[1].x == pinkX && game.ghosts[1].y == pinkY &&
                  game.ghosts[2].x == cyanX && game.ghosts[2].y == cyanY &&
                  game.ghosts[3].x == orangeX && game.ghosts[3].y == orangeY,
                  "Pink Cyan and Orange remain stationary");
+    return ok;
+}
+
+bool test_red_direction_selection() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+
+    GhostState& red = game.ghosts[0];
+    ok &= expect(red.targetX == game.pacman.x && red.targetY == game.pacman.y,
+                 "Red starts with Pac-Man's current logical target");
+    red.x = 208;
+    red.y = 184;
+    red.direction = Direction::Left;
+    red.requestedDirection = Direction::Left;
+    red.offset = 0;
+    ok &= expect(choose_ghost_direction(game, red, 208, 24) == Direction::Up,
+                 "Red targets Pac-Man directly at a legal intersection");
+    const Direction firstChoice = choose_ghost_direction(game, red, 208, 24);
+    const Direction secondChoice = choose_ghost_direction(game, red, 208, 24);
+    ok &= expect(firstChoice == secondChoice, "Red direction choice is deterministic");
+
+    int tieX = 0;
+    int tieY = 0;
+    Direction tieCurrent = Direction::None;
+    Direction tieExpected = Direction::None;
+    ok &= expect(find_tie_point(game, &tieX, &tieY, &tieCurrent, &tieExpected),
+                 "Maze provides a deterministic multi-route tie point");
+    if (tieExpected != Direction::None) {
+        red.x = tieX;
+        red.y = tieY;
+        red.direction = tieCurrent;
+        red.requestedDirection = tieCurrent;
+        red.offset = 0;
+        ok &= expect(choose_ghost_direction(game, red, tieX, tieY) == tieExpected,
+                     "Equal-distance choices use the historical Up Down Left Right tie order");
+    }
+
+    GameState deadEndGame = game;
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        for (int column = 0; column < kPacManMazeColumns; ++column) {
+            deadEndGame.level.cells[row][column] = CellType::Wall;
+        }
+    }
+    deadEndGame.level.cells[5][5] = CellType::Empty;
+    deadEndGame.level.cells[4][5] = CellType::Empty;
+    GhostState deadEndRed = deadEndGame.ghosts[0];
+    deadEndRed.x = 5 * kPacManTileSize + 8;
+    deadEndRed.y = 5 * kPacManTileSize + 8;
+    deadEndRed.direction = Direction::Down;
+    deadEndRed.requestedDirection = Direction::Down;
+    deadEndRed.offset = 0;
+    ok &= expect(choose_ghost_direction(deadEndGame, deadEndRed, 224, 376) == Direction::Up,
+                 "Red reverses only when a dead end leaves no alternative");
+
+    red.x = 208;
+    red.y = 184;
+    red.direction = Direction::Left;
+    const Direction targetBefore = choose_ghost_direction(game, red, 208, 24);
+    const Direction targetAfter = choose_ghost_direction(game, red, 64, 376);
+    ok &= expect(targetBefore != targetAfter,
+                 "Red reacts predictably when Pac-Man changes target position");
+    return ok;
+}
+
+bool test_moving_red_collisions() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+
+    int centerX = 0;
+    int centerY = 0;
+    Direction redDirection = Direction::None;
+    Direction perpendicularDirection = Direction::None;
+    ok &= expect(find_perpendicular_approach(game, &centerX, &centerY, &redDirection,
+                                              &perpendicularDirection),
+                 "Maze provides a perpendicular Red collision route");
+    if (redDirection != Direction::None) {
+        GhostState& red = game.ghosts[0];
+        red.x = centerX;
+        red.y = centerY;
+        red.direction = redDirection;
+        red.requestedDirection = redDirection;
+        red.offset = 1;
+        red.speed = 1;
+        game.pacman.x = centerX - 15 * direction_x_for_test(perpendicularDirection);
+        game.pacman.y = centerY - 15 * direction_y_for_test(perpendicularDirection);
+        game.pacman.direction = perpendicularDirection;
+        game.pacman.facingDirection = perpendicularDirection;
+        game.pacman.requestedDirection = perpendicularDirection;
+        game.pacman.offset = 1;
+        game.pacman.speed = 1;
+        const int redBeforeX = red.x;
+        const int redBeforeY = red.y;
+        game_update(&game);
+        ok &= expect(game.playState == PlayState::Dying && game.collisionDetected &&
+                     (red.x != redBeforeX || red.y != redBeforeY),
+                     "Moving Red collides at a perpendicular intersection");
+        const uint32_t deathTransitions = game.deathTransitions;
+        const uint8_t livesAfterCollision = game.lives;
+        game_update(&game);
+        ok &= expect(game.playState == PlayState::Dying && game.deathTransitions == deathTransitions &&
+                     game.lives == livesAfterCollision,
+                     "One moving-Red collision triggers one death and suppresses duplicates");
+    }
+
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    ok &= expect(find_perpendicular_approach(game, &centerX, &centerY, &redDirection,
+                                              &perpendicularDirection),
+                 "Maze provides a horizontal Red collision route");
+    if (redDirection != Direction::None) {
+        GhostState& red = game.ghosts[0];
+        red.x = centerX;
+        red.y = centerY;
+        red.direction = redDirection;
+        red.requestedDirection = redDirection;
+        red.offset = 1;
+        red.speed = 1;
+        const Direction pacmanDirection = opposite_direction(redDirection);
+        game.pacman.x = centerX + 15 * direction_x_for_test(redDirection);
+        game.pacman.y = centerY + 15 * direction_y_for_test(redDirection);
+        game.pacman.direction = pacmanDirection;
+        game.pacman.facingDirection = pacmanDirection;
+        game.pacman.requestedDirection = pacmanDirection;
+        game.pacman.offset = 1;
+        game.pacman.speed = 1;
+        game_update(&game);
+        ok &= expect(game.playState == PlayState::Dying && game.lives == kPacManInitialLives - 1,
+                     "Moving Red collides head-on and deducts exactly one life");
+    }
+    return ok;
+}
+
+bool test_red_state_gates() {
+    bool ok = true;
+    const PlayState states[] = {
+        PlayState::Dying, PlayState::ReadyAfterDeath, PlayState::LevelComplete, PlayState::GameOver
+    };
+    for (uint32_t index = 0; index < sizeof(states) / sizeof(states[0]); ++index) {
+        GameState game{};
+        game_initialize(&game);
+        game.ghosts[0].x = 208;
+        game.ghosts[0].y = 184;
+        game.ghosts[0].direction = Direction::Left;
+        game.ghosts[0].offset = 1;
+        game.ghosts[0].speed = 1;
+        game.playState = states[index];
+        game.deathStepsRemaining = 100;
+        game.readyStepsRemaining = 100;
+        game.levelCompleteStepsRemaining = 100;
+        const int beforeX = game.ghosts[0].x;
+        const int beforeY = game.ghosts[0].y;
+        game_update(&game);
+        ok &= expect(game.ghosts[0].x == beforeX && game.ghosts[0].y == beforeY,
+                     "Red stops during every non-Playing state");
+    }
     return ok;
 }
 
@@ -471,11 +756,14 @@ bool test_game_over_and_restart() {
                  game.level.totalConsumablesRemaining == 244,
                  "restart restores all 244 consumables");
     ok &= expect(game.pacman.x == 224 && game.pacman.y == 376 &&
-                 game.ghosts[0].x == 224 && game.ghosts[0].y == 184 &&
+                  game.ghosts[0].x == 224 && game.ghosts[0].y == 184 &&
                  game.ghosts[1].x == 192 && game.ghosts[1].y == 224 &&
                  game.ghosts[2].x == 224 && game.ghosts[2].y == 240 &&
-                 game.ghosts[3].x == 256 && game.ghosts[3].y == 224,
-                 "restart resets actor positions");
+                  game.ghosts[3].x == 256 && game.ghosts[3].y == 224,
+                  "restart resets actor positions");
+    ok &= expect(game.ghosts[0].direction == Direction::Left && game.ghosts[0].targetX == 224 &&
+                 game.ghosts[0].targetY == 376,
+                 "restart restores Red's deterministic initial direction and target");
     ok &= expect(!game.held.left && !game.held.right && !game.held.up && !game.held.down &&
                  game.playState == PlayState::ReadyAfterDeath,
                  "restart clears input and enters ready state");
@@ -498,6 +786,9 @@ int main() {
     ok &= test_buffered_turn_and_tunnel_counts();
     ok &= test_completion_reset_and_overflow();
     ok &= test_red_ghost_movement();
+    ok &= test_red_direction_selection();
+    ok &= test_moving_red_collisions();
+    ok &= test_red_state_gates();
     ok &= test_ghost_layout_and_collision();
     ok &= test_death_lives_and_reset();
     ok &= test_game_over_and_restart();

@@ -240,6 +240,10 @@ PACMAN_ENABLE_DIAGNOSTICS:BOOL=ON
 //Enable test-only automatic Red overlap for hosted danger validation
 PACMAN_HOSTED_DANGER_TEST:BOOL=ON
 
+//Enable isolated hosted Red movement validation without forced
+// collisions
+PACMAN_HOSTED_RED_MOVEMENT_TEST:BOOL=OFF
+
 //Value Computed by CMake
 guideXOSPacManNativeElf_BINARY_DIR:STATIC=D:/dev/pacman/guidexos/build-danger
 

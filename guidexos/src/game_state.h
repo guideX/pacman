@@ -55,6 +55,8 @@ struct GhostState {
     Direction requestedDirection;
     int offset;
     int speed;
+    int targetX;
+    int targetY;
     uint8_t animationFrame;
     bool active;
 };
@@ -94,5 +96,6 @@ struct GameState {
     bool actorReset;
     bool gameOverEntered;
     bool sessionRestarted;
+    bool suppressGhostCollisionsForValidation;
     uint64_t simulationSteps;
 };

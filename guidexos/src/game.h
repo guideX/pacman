@@ -16,6 +16,8 @@ bool game_restart_session(GameState* game);
 void add_score(GameState& game, uint32_t points);
 bool pacman_collides_with_ghost(const PacManState& pacman, const GhostState& ghost);
 const char* ghost_kind_name(GhostKind kind);
+Direction choose_ghost_direction(const GameState& game, const GhostState& ghost,
+                                 int targetX, int targetY);
 Direction game_direction_for_key(int keyCode);
 void game_press_direction(GameState* game, Direction direction);
 void game_release_direction(GameState* game, Direction direction);

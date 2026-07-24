@@ -59,14 +59,22 @@ cmake --build build
 
 The build writes the local ELF to `bin/amd64/pacman.elf` and stages the discovered package at `D:\Apps\PacMan`, which is the hosted runtime's `/Apps` package root. Override `GUIDEXOS_PACKAGE_ROOT` for another guideXOS target.
 
-The danger-state hosted validation is an explicitly isolated build. It uses the same `PACMAN_HOSTED_DANGER_TEST` compile-time hook that defaults to `OFF`, but writes `bin/amd64/pacman-danger-validation.elf`, stages a separate `D:\Apps\PacManDangerValidation` package, and uses the test-only manifest `app-danger-validation.json`. It never writes the production ELF or `D:\Apps\PacMan`:
+The hosted validation builds are explicitly isolated. They use the same `PACMAN_HOSTED_DANGER_TEST` compile-time hook that defaults to `OFF`, write `bin/amd64/pacman-danger-validation.elf`, stage a separate `D:\Apps\PacManDangerValidation` package, and use the test-only manifest `app-danger-validation.json`. They never write the production ELF or `D:\Apps\PacMan`:
 
 ```powershell
 cmake -S . -B build-danger -G Ninja -DPACMAN_HOSTED_DANGER_TEST=ON -DGUIDEXOS_SERVER_ROOT=D:\dev\guideXOSServer -DGUIDEXOS_PACKAGE_ROOT=D:\Apps
 cmake --build build-danger --target pacman-danger-validation
 ```
 
-The validation hook places Red over Pac-Man at bounded simulation steps for up to three deterministic hosted deaths. It is not exposed through a production key and is absent from ordinary builds.
+The ordinary danger build places Red over Pac-Man at bounded simulation steps for up to three deterministic hosted deaths. The separate Red movement validation build keeps Red moving, uses a staged moving-collision window, and is enabled only with `-DPACMAN_HOSTED_RED_MOVEMENT_TEST=ON` (which requires the danger hook):
+
+```powershell
+cmake -S . -B build-red -G Ninja -DPACMAN_HOSTED_DANGER_TEST=ON -DPACMAN_HOSTED_RED_MOVEMENT_TEST=ON -DPACMAN_ENABLE_DIAGNOSTICS=ON -DGUIDEXOS_SERVER_ROOT=D:\dev\guideXOSServer -DGUIDEXOS_PACKAGE_ROOT=D:\Apps
+cmake --build build-red --target pacman-danger-validation
+powershell -ExecutionPolicy Bypass -File tools\validate_hosted_red_movement.ps1
+```
+
+Both hooks are compile-time validation behavior, are off by default, are isolated from `D:\Apps\PacMan`, and are not exposed through a production key.
 
 ## Native platform additions
 
@@ -129,6 +137,40 @@ Historical `PacDied` decrements lives immediately, resets the actors when lives 
 
 Power pills still score 10 and disappear. They do not affect stationary ghost behavior; frightened mode and ghost eating are intentionally unimplemented.
 
+## Red ghost movement milestone
+
+Historical `basGhostAI.bas` gives Ghost(1), the logical Red ghost, Pac-Man's
+current tile directly. Red is assigned `Game.Speed`, which is initialized to
+1 logical pixel per 10 ms timer step. The native port makes the historical
+random initial horizontal direction deterministic by using Left, starts Red
+active at `(224,184)`, and keeps the other three ghosts at their historical
+positions. Red is already outside the ghost house in the historical setup, so
+the house-exit path used by later ghosts does not apply; its first AI tick
+activates it immediately.
+
+Red chooses only at an aligned tile center (`offset == 0`). It queries the
+logical maze, enumerates candidates in the fixed order Up, Down, Left, Right,
+and continues straight through a corridor. The VB6 source does not compute an
+Euclidean, squared, or Manhattan distance; its direct-target rule is a
+sign-priority sequence. The native bounded helper expresses that same direct
+target preference as Manhattan distance in logical pixels, with the shortest
+wrapped horizontal distance when both positions are on the tunnel row.
+Immediate reverse is excluded when any other legal direction exists; at a dead
+end it is the only remaining legal choice. Equal scores use the fixed
+enumeration order, so selection is deterministic and independent of container
+order. There is no scatter/chase schedule yet.
+
+The logical tunnel row wraps Red from the left edge to the right edge and back
+using the historical 416-pixel span. Red's animation frame toggles on fixed
+simulation steps, while the renderer selects the historical directional sprite
+row (`direction * 32`) and uses the existing mask composition. The source
+sprites provide one normal body frame per direction, so no render-rate-based
+animation sequence is invented. The update order is input, aligned Pac-Man
+turn/wall handling, next-tile pill consumption and completion check, Pac-Man
+movement/tunnel wrap, mouth animation, Red movement, collision, then the
+simulation-step/state-timer advance and dirty-frame marking. Existing
+completion-before-Red/collision behavior is preserved.
+
 ## Current limitations and next milestone
 
-The interactive Native ELF now supports Pac-Man movement under the arrow keys, four stationary historical ghosts, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is movement setup, next-tile pill consumption, level-complete check, Pac-Man movement, then one collision sample. Focus loss clears held directions and stops movement; new input is required after focus returns. Frightened mode, ghost eating, ghost AI, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is Red ghost movement with legal intersection selection, a simple historical target, and tunnel handling; keep Pink, Cyan, and Orange stationary until that path is validated.
+The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red movement, three stationary historical ghosts, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is movement setup, next-tile pill consumption, level-complete check, Pac-Man movement, Red movement, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. Pink movement, Cyan movement, Orange movement, scatter/chase schedules, frightened mode, ghost eating, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is Pink ghost movement using its historical projected Pac-Man target while Red keeps its validated direct target.

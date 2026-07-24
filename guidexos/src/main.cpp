@@ -13,6 +13,10 @@
 #define PACMAN_HOSTED_DANGER_TEST 0
 #endif
 
+#ifndef PACMAN_HOSTED_RED_MOVEMENT_TEST
+#define PACMAN_HOSTED_RED_MOVEMENT_TEST 0
+#endif
+
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     for (uint64_t i = 0; i < bytes; ++i) output[i] = static_cast<uint8_t>(value);
@@ -103,6 +107,18 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.pacman.y));
     append_frame_text(message, &index, sizeof(message), " size=448x553 stride=1792 bytes=990976 result=");
     append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(static_cast<uint32_t>(result)));
+    append_frame_text(message, &index, sizeof(message), " red=");
+    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].x));
+    append_frame_text(message, &index, sizeof(message), ",");
+    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].y));
+    append_frame_text(message, &index, sizeof(message), " dir=");
+    append_frame_text(message, &index, sizeof(message), game_direction_name(game.ghosts[0].direction));
+    append_frame_text(message, &index, sizeof(message), " target=");
+    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].targetX));
+    append_frame_text(message, &index, sizeof(message), ",");
+    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].targetY));
+    append_frame_text(message, &index, sizeof(message), " anim=");
+    append_frame_number(message, &index, sizeof(message), game.ghosts[0].animationFrame);
     message[index] = '\0';
     ctx->host->log(ctx, message);
 }
@@ -177,13 +193,43 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (game.lifeDecremented) log_game_value(ctx, "PacMan life decremented; lives remaining: ", game.lives);
     if (game.actorReset) ctx->host->log(ctx, "PacMan actors reset after death");
     if (game.gameOverEntered) ctx->host->log(ctx, "PacMan Game Over entered");
+    char message[192];
+    uint32_t index = 0;
+    const char* prefix = "PacMan Red state x=";
+    while (prefix[index] && index + 1u < sizeof(message)) message[index++] = prefix[index];
+    auto append_number = [&message, &index](uint32_t value) {
+        char digits[10];
+        uint32_t length = 0;
+        do {
+            digits[length++] = static_cast<char>('0' + (value % 10u));
+            value /= 10u;
+        } while (value != 0 && length < sizeof(digits));
+        while (length > 0 && index + 1u < sizeof(message)) message[index++] = digits[--length];
+    };
+    auto append_text = [&message, &index](const char* text) {
+        if (!text) return;
+        for (uint32_t i = 0; text[i] && index + 1u < sizeof(message); ++i) message[index++] = text[i];
+    };
+    append_number(static_cast<uint32_t>(game.ghosts[0].x));
+    append_text(" y=");
+    append_number(static_cast<uint32_t>(game.ghosts[0].y));
+    append_text(" dir=");
+    append_text(game_direction_name(game.ghosts[0].direction));
+    append_text(" target=");
+    append_number(static_cast<uint32_t>(game.ghosts[0].targetX));
+    append_text(",");
+    append_number(static_cast<uint32_t>(game.ghosts[0].targetY));
+    append_text(" anim=");
+    append_number(game.ghosts[0].animationFrame);
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
 #else
     (void)ctx;
     (void)game;
 #endif
 }
 
-#if PACMAN_HOSTED_DANGER_TEST
+#if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
 static bool apply_hosted_danger_test_placement(GameState* game, uint32_t* placementCount) {
     if (!game || !placementCount || game->playState != PlayState::Playing || *placementCount >= 3u) return false;
     const uint32_t stepsBetweenPlacements = kPacManDeathDurationSteps +
@@ -232,6 +278,20 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 #if PACMAN_HOSTED_DANGER_TEST
     ctx->host->log(ctx, "PacMan hosted danger test placement enabled");
 #endif
+#if PACMAN_HOSTED_RED_MOVEMENT_TEST
+    game.pacman.x = 64;
+    game.pacman.y = 264;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 0;
+    game.pacman.speed = 0;
+    game.ghosts[0].targetX = game.pacman.x;
+    game.ghosts[0].targetY = game.pacman.y;
+    game.suppressGhostCollisionsForValidation = true;
+    game.visualDirty = true;
+    ctx->host->log(ctx, "PacMan hosted Red movement validation enabled");
+#endif
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
@@ -257,7 +317,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     uint64_t accumulatorMs = 0;
     bool running = true;
     bool simulationStartedLogged = false;
-#if PACMAN_HOSTED_DANGER_TEST
+#if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
     uint32_t hostedDangerPlacementCount = 0;
 #endif
 
@@ -323,9 +383,45 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
         uint32_t updates = 0;
         while (accumulatorMs >= kFixedStepMs && updates < kMaxCatchUpSteps) {
-#if PACMAN_HOSTED_DANGER_TEST
+#if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
             if (apply_hosted_danger_test_placement(&game, &hostedDangerPlacementCount)) {
                 log_game_value(ctx, "PacMan hosted danger overlap placed: ", hostedDangerPlacementCount);
+            }
+#endif
+#if PACMAN_HOSTED_RED_MOVEMENT_TEST
+            if (game.playState == PlayState::Playing && game.suppressGhostCollisionsForValidation) {
+                game.pacman.x = 64;
+                game.pacman.y = 264;
+                game.pacman.direction = Direction::None;
+                game.pacman.facingDirection = Direction::None;
+                game.pacman.requestedDirection = Direction::None;
+                game.pacman.offset = 0;
+                game.pacman.speed = 0;
+                game.ghosts[0].targetX = game.pacman.x;
+                game.ghosts[0].targetY = game.pacman.y;
+            }
+            if (game.suppressGhostCollisionsForValidation && game.simulationSteps >= 140u &&
+                game.ghosts[0].y == 232 &&
+                (game.ghosts[0].x <= 32 || game.ghosts[0].x >= 416)) {
+                int collisionTargetX = game.ghosts[0].x;
+                int collisionTargetY = game.ghosts[0].y;
+                if (game.ghosts[0].direction == Direction::Left) collisionTargetX -= 32;
+                if (game.ghosts[0].direction == Direction::Right) collisionTargetX += 32;
+                if (game.ghosts[0].direction == Direction::Up) collisionTargetY -= 32;
+                if (game.ghosts[0].direction == Direction::Down) collisionTargetY += 32;
+                if (collisionTargetX < 16) collisionTargetX += 416;
+                if (collisionTargetX > 431) collisionTargetX -= 416;
+                game.pacman.x = collisionTargetX;
+                game.pacman.y = collisionTargetY;
+                game.pacman.direction = Direction::None;
+                game.pacman.facingDirection = Direction::None;
+                game.pacman.requestedDirection = Direction::None;
+                game.pacman.offset = 0;
+                game.pacman.speed = 0;
+                game.ghosts[0].targetX = collisionTargetX;
+                game.ghosts[0].targetY = collisionTargetY;
+                game.suppressGhostCollisionsForValidation = false;
+                ctx->host->log(ctx, "PacMan hosted Red movement collision window enabled");
             }
 #endif
             game_update(&game);
