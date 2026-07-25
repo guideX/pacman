@@ -439,7 +439,9 @@ try {
     $collisionB = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 2 8000
     $collisionC = Wait-ForAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 3 8000
     $lifeZero = (Get-LogCount 'PacMan life decremented; lives remaining: 0') -ge 1
-    $gameOver = Wait-ForLog 'PacMan Game Over entered' 1000
+    # The final 100-step death animation is compositor-paced; allow the
+    # existing fixed-step lifecycle to emit Game Over before asserting it.
+    $gameOver = Wait-ForLog 'PacMan Game Over entered' 5000
     $results.Add("cycle=1 collisions=$($collision1 -and $collisionB -and $collisionC) game-over=$gameOver lives-zero=$lifeZero")
     if (-not ($collision1 -and $collisionB -and $collisionC -and $gameOver -and $lifeZero)) {
         throw 'Danger validation did not reach Game Over after three bounded collisions.'

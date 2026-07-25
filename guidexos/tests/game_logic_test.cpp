@@ -77,6 +77,23 @@ void disable_non_red_ghosts(GameState* game) {
     for (uint32_t index = 1; index < kPacManGhostCount; ++index) game->ghosts[index].active = false;
 }
 
+void disable_non_pink_ghosts(GameState* game) {
+    if (!game) return;
+    game->ghosts[0].active = false;
+    game->ghosts[2].active = false;
+    game->ghosts[3].active = false;
+}
+
+void enable_normal_pink(GameState* game) {
+    if (!game) return;
+    GhostState& pink = game->ghosts[1];
+    pink.active = true;
+    pink.collisionActive = true;
+    pink.releaseState = GhostReleaseState::Normal;
+    pink.releaseStepsRemaining = 0;
+    pink.speed = 1;
+}
+
 bool find_tie_point(const GameState& game, int* x, int* y, Direction* current,
                     Direction* expected) {
     const Direction directions[] = {
@@ -192,6 +209,333 @@ bool test_historical_movement() {
     for (int i = 0; i < 8; ++i) game_update(&game);
     ok &= expect(game.pacman.x > initialX, "movement resumes after new input");
     ok &= expect(game.pacman.facingDirection == Direction::Right, "animation orientation tracks direction");
+    return ok;
+}
+
+bool test_pink_target_and_release_state() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    const GhostState& pink = game.ghosts[1];
+    ok &= expect(pink.x == 192 && pink.y == 224, "Pink starts at the historical house position");
+    ok &= expect(pink.direction == Direction::Up, "Pink starts facing Up");
+    ok &= expect(pink.releaseState == GhostReleaseState::PinkHouseBounce &&
+                 !pink.collisionActive && pink.speed == 1,
+                 "Pink starts inside the house in an inactive bounded release state");
+
+    PacManState pacman = game.pacman;
+    pacman.x = 128;
+    pacman.y = 128;
+    pacman.speed = 0;
+    pacman.offset = 1;
+    pacman.requestedDirection = Direction::None;
+    const Direction directions[] = {
+        Direction::Right, Direction::Left, Direction::Down, Direction::Up
+    };
+    const int expectedX[] = {192, 64, 128, 128};
+    const int expectedY[] = {192, 64, 128, 128};
+    for (int index = 0; index < 4; ++index) {
+        pacman.direction = directions[index];
+        pacman.facingDirection = directions[index];
+        const GhostTarget target = calculate_pink_target(game, pacman);
+        ok &= expect(target.x == expectedX[index] && target.y == expectedY[index],
+                     "Pink target projects four tiles with the exact direction formula");
+    }
+    pacman.direction = Direction::Right;
+    const GhostTarget rightTarget = calculate_pink_target(game, pacman);
+    pacman.direction = Direction::Up;
+    const GhostTarget upTarget = calculate_pink_target(game, pacman);
+    ok &= expect(rightTarget.y == pacman.y + 64 && upTarget.y == pacman.y,
+                 "Pink preserves the historical XD-for-Y projection quirk");
+
+    pacman.x = 176;
+    pacman.y = 224;
+    pacman.direction = Direction::Right;
+    pacman.facingDirection = Direction::Right;
+    const GhostTarget nearTarget = calculate_pink_target(game, pacman);
+    ok &= expect(nearTarget.x == pacman.x && nearTarget.y == pacman.y,
+                 "Pink does not project when historical tile separation is at most two");
+    return ok;
+}
+
+bool test_pink_release_and_movement() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    disable_non_pink_ghosts(&game);
+    game.pacman.x = 64;
+    game.pacman.y = 232;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+
+    bool sawStart = false;
+    bool sawCenterRoute = false;
+    bool sawExitRoute = false;
+    bool completed = false;
+    for (uint32_t step = 0; step < 260; ++step) {
+        game_update(&game);
+        const GhostState& pink = game.ghosts[1];
+        if (pink.releaseState == GhostReleaseState::PinkHouseBounce) {
+            sawStart = true;
+            ok &= expect(pink.x == 192 && pink.y >= 224 && pink.y <= 240,
+                         "Pink house bounce stays on its historical vertical lane");
+        } else if (pink.releaseState == GhostReleaseState::PinkToCenter) {
+            sawCenterRoute = true;
+            ok &= expect(pink.y == 224 && pink.x >= 192 && pink.x <= 224,
+                         "Pink leaves the house only through the deterministic center route");
+        } else if (pink.releaseState == GhostReleaseState::PinkExiting) {
+            sawExitRoute = true;
+            ok &= expect(pink.x == 224 && pink.y >= 184 && pink.y <= 224,
+                         "Pink exits upward through the legal house lane");
+        } else if (pink.releaseState == GhostReleaseState::Normal) {
+            completed = true;
+            break;
+        }
+    }
+    ok &= expect(sawStart && sawCenterRoute && sawExitRoute && completed,
+                 "Pink release begins, exits once, and activates normal targeting");
+    ok &= expect(game.ghosts[1].x == 224 && game.ghosts[1].y == 184 &&
+                 game.ghosts[1].collisionActive && game.pinkReleaseCompleted,
+                 "Pink becomes collision-active at the historical outside-house position");
+
+    game.pacman.x = 288;
+    game.pacman.y = 184;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    const int beforeX = game.ghosts[1].x;
+    for (uint32_t step = 0; step < 8; ++step) {
+        game_update(&game);
+        const int column = level_column_from_position(game.ghosts[1].x);
+        const int row = level_row_from_position(game.ghosts[1].y);
+        ok &= expect(is_walkable_cell(level_cell(game.level, column, row)),
+                     "Moving Pink remains in walkable maze cells");
+    }
+    ok &= expect(game.ghosts[1].x > beforeX, "Pink continues through a legal corridor at one pixel per step");
+    return ok;
+}
+
+bool test_pink_direction_selection_and_tunnels() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    GhostState& pink = game.ghosts[1];
+    pink.x = 208;
+    pink.y = 184;
+    pink.direction = Direction::Left;
+    pink.requestedDirection = Direction::Left;
+    pink.offset = 0;
+    ok &= expect(choose_pink_direction(game, pink, 208, 24) == Direction::Up,
+                 "Pink chooses a legal target-directed turn without reversing");
+    const Direction first = choose_pink_direction(game, pink, 208, 24);
+    const Direction second = choose_pink_direction(game, pink, 208, 24);
+    ok &= expect(first == second, "Pink direction selection is deterministic");
+
+    bool foundHorizontalPriority = false;
+    for (int row = 0; row < kPacManMazeRows && !foundHorizontalPriority; ++row) {
+        for (int column = 0; column < kPacManMazeColumns && !foundHorizontalPriority; ++column) {
+            const int x = column * kPacManTileSize + 8;
+            const int y = row * kPacManTileSize + 8;
+            if (!can_move(game, x, y, Direction::Up) ||
+                !can_move(game, x, y, Direction::Right)) continue;
+            pink.x = x;
+            pink.y = y;
+            pink.direction = Direction::Up;
+            pink.requestedDirection = Direction::Up;
+            pink.offset = 0;
+            if (choose_pink_direction(game, pink, x + 64, y - 64) == Direction::Right) {
+                foundHorizontalPriority = true;
+            }
+        }
+    }
+    ok &= expect(foundHorizontalPriority,
+                 "Pink preserves historical horizontal-over-vertical sign priority");
+
+    GameState deadEndGame = game;
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        for (int column = 0; column < kPacManMazeColumns; ++column) {
+            deadEndGame.level.cells[row][column] = CellType::Wall;
+        }
+    }
+    deadEndGame.level.cells[5][5] = CellType::Empty;
+    deadEndGame.level.cells[4][5] = CellType::Empty;
+    GhostState deadEndPink = deadEndGame.ghosts[1];
+    deadEndPink.x = 5 * kPacManTileSize + 8;
+    deadEndPink.y = 5 * kPacManTileSize + 8;
+    deadEndPink.direction = Direction::Down;
+    deadEndPink.requestedDirection = Direction::Down;
+    deadEndPink.offset = 0;
+    ok &= expect(choose_pink_direction(deadEndGame, deadEndPink, 224, 376) == Direction::Up,
+                 "Pink reverses only at a dead end");
+
+    game_initialize(&game);
+    disable_non_pink_ghosts(&game);
+    enable_normal_pink(&game);
+    pink = game.ghosts[1];
+    pink.releaseState = GhostReleaseState::Normal;
+    pink.collisionActive = true;
+    pink.x = 16;
+    pink.y = 232;
+    pink.direction = Direction::Left;
+    pink.requestedDirection = Direction::Left;
+    pink.offset = 1;
+    game.pacman.x = 208;
+    game.pacman.y = 376;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.ghosts[1].x == 431 && game.ghosts[1].y == 232 && game.pinkTunnelWrapped,
+                 "Pink wraps left-to-right through the horizontal tunnel");
+
+    pink.x = 424;
+    pink.y = 232;
+    pink.direction = Direction::Right;
+    pink.requestedDirection = Direction::Right;
+    pink.offset = 1;
+    game_update(&game);
+    ok &= expect(pink.x == 9 && pink.y == 232 && game.pinkTunnelWrapped,
+                 "Pink wraps right-to-left through the horizontal tunnel");
+
+    pink.x = 16;
+    pink.y = 216;
+    pink.direction = Direction::Left;
+    pink.requestedDirection = Direction::Left;
+    pink.offset = 0;
+    game_update(&game);
+    ok &= expect(pink.x == 16 && pink.y == 216 && !game.pinkTunnelWrapped,
+                 "Pink never wraps on a non-tunnel row");
+    return ok;
+}
+
+bool test_pink_collisions_and_state_gates() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    disable_non_pink_ghosts(&game);
+    enable_normal_pink(&game);
+    GhostState& pink = game.ghosts[1];
+    pink.x = 208;
+    pink.y = 184;
+    pink.direction = Direction::Right;
+    pink.requestedDirection = Direction::Right;
+    pink.offset = 1;
+    pink.speed = 1;
+    game.pacman.x = 208;
+    game.pacman.y = 169;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    const int beforeX = pink.x;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.collisionDetected &&
+                 pink.x != beforeX,
+                 "Moving Pink collides at an intersection after both actors update");
+
+    game_initialize(&game);
+    game.ghosts[0].active = true;
+    game.ghosts[0].collisionActive = true;
+    game.ghosts[0].speed = 0;
+    enable_normal_pink(&game);
+    game.ghosts[1].speed = 0;
+    game.ghosts[0].x = 180;
+    game.ghosts[0].y = 200;
+    game.ghosts[1].x = 180;
+    game.ghosts[1].y = 200;
+    game.pacman.x = 180;
+    game.pacman.y = 200;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.lives == kPacManInitialLives - 1 &&
+                 game.deathTransitions == 1,
+                 "Simultaneous Red and Pink overlap deducts one life only");
+
+    const PlayState states[] = {
+        PlayState::Dying, PlayState::ReadyAfterDeath, PlayState::LevelComplete, PlayState::GameOver
+    };
+    for (uint32_t index = 0; index < sizeof(states) / sizeof(states[0]); ++index) {
+        game_initialize(&game);
+        enable_normal_pink(&game);
+        game.ghosts[1].x = 208;
+        game.ghosts[1].y = 184;
+        game.ghosts[1].direction = Direction::Left;
+        game.ghosts[1].requestedDirection = Direction::Left;
+        game.ghosts[1].offset = 1;
+        game.ghosts[1].speed = 1;
+        game.playState = states[index];
+        game.deathStepsRemaining = 100;
+        game.readyStepsRemaining = 100;
+        game.levelCompleteStepsRemaining = 100;
+        const int oldX = game.ghosts[1].x;
+        const int oldY = game.ghosts[1].y;
+        game_update(&game);
+        ok &= expect(game.ghosts[1].x == oldX && game.ghosts[1].y == oldY,
+                     "Pink stops during every non-Playing state");
+    }
+    return ok;
+}
+
+bool test_pink_reset_lifecycle_and_stationary_companions() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    disable_non_pink_ghosts(&game);
+    enable_normal_pink(&game);
+    game.ghosts[1].x = game.pacman.x;
+    game.ghosts[1].y = game.pacman.y;
+    game.ghosts[1].speed = 0;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    for (uint32_t step = 0; step < kPacManDeathDurationSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::ReadyAfterDeath &&
+                 game.ghosts[1].x == 192 && game.ghosts[1].y == 224 &&
+                 game.ghosts[1].direction == Direction::Up &&
+                 game.ghosts[1].releaseState == GhostReleaseState::PinkHouseBounce &&
+                 !game.ghosts[1].collisionActive,
+                 "Pink resets to the historical house release state after death");
+
+    game_reset_level(&game);
+    ok &= expect(game.levelNumber == 2 && game.ghosts[1].releaseState == GhostReleaseState::PinkHouseBounce &&
+                 game.ghosts[1].x == 192 && game.ghosts[1].y == 224,
+                 "Pink release state resets after level completion");
+
+    game.playState = PlayState::GameOver;
+    ok &= expect(game_restart_session(&game) &&
+                 game.ghosts[1].releaseState == GhostReleaseState::PinkHouseBounce &&
+                 game.ghosts[1].x == 192 && game.ghosts[1].y == 224,
+                 "Pink release state resets after Game Over restart");
+
+    game_initialize(&game);
+    const int cyanX = game.ghosts[2].x;
+    const int cyanY = game.ghosts[2].y;
+    const int orangeX = game.ghosts[3].x;
+    const int orangeY = game.ghosts[3].y;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    for (uint32_t step = 0; step < 120; ++step) game_update(&game);
+    ok &= expect(game.ghosts[2].x == cyanX && game.ghosts[2].y == cyanY &&
+                 game.ghosts[3].x == orangeX && game.ghosts[3].y == orangeY,
+                 "Cyan and Orange remain stationary while Pink moves");
     return ok;
 }
 
@@ -428,10 +772,10 @@ bool test_red_ghost_movement() {
     game_update(&game);
     ok &= expect(game.ghosts[0].x == 16 && game.ghosts[0].y == 216 && !game.redTunnelWrapped,
                  "Red never wraps on a non-tunnel row");
-    ok &= expect(game.ghosts[1].x == pinkX && game.ghosts[1].y == pinkY &&
+    ok &= expect((game.ghosts[1].x != pinkX || game.ghosts[1].y != pinkY) &&
                  game.ghosts[2].x == cyanX && game.ghosts[2].y == cyanY &&
                  game.ghosts[3].x == orangeX && game.ghosts[3].y == orangeY,
-                 "Pink Cyan and Orange remain stationary");
+                 "Pink moves while Cyan and Orange remain stationary");
     return ok;
 }
 
@@ -659,6 +1003,7 @@ void place_stationary_collision(GameState* game, GhostKind kind) {
     game->ghosts[index].x = 180;
     game->ghosts[index].y = 200;
     game->ghosts[index].active = true;
+    game->ghosts[index].collisionActive = true;
     game->pacman.x = game->ghosts[index].x;
     game->pacman.y = game->ghosts[index].y;
     game->pacman.offset = 1;
@@ -780,6 +1125,11 @@ bool test_game_over_and_restart() {
 int main() {
     bool ok = true;
     ok &= test_historical_movement();
+    ok &= test_pink_target_and_release_state();
+    ok &= test_pink_release_and_movement();
+    ok &= test_pink_direction_selection_and_tunnels();
+    ok &= test_pink_collisions_and_state_gates();
+    ok &= test_pink_reset_lifecycle_and_stationary_companions();
     ok &= test_counts_and_layout();
     ok &= test_normal_pill_all_directions();
     ok &= test_power_pill_and_duplicate_prevention();

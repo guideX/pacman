@@ -22,6 +22,22 @@ static int absolute_value(int value) {
     return value < 0 ? -value : value;
 }
 
+// Count aligned house bounces, not render or simulation ticks. Two direction
+// reversals reproduce the short historical vertical wait before Pink heads to
+// the center of the box.
+static const uint32_t kPinkHouseBounceSteps = 2u;
+
+static int clamp_int(int value, int minimum, int maximum) {
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value;
+}
+
+static int historical_tile_coordinate(int position) {
+    if (position >= 0) return position / kPacManTileSize;
+    return -(((-position) + kPacManTileSize - 1) / kPacManTileSize);
+}
+
 static void clear_held(HeldDirections* held) {
     if (!held) return;
     held->left = false;
@@ -85,6 +101,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[0].targetY = 376;
     ghosts[0].animationFrame = 0;
     ghosts[0].active = true;
+    ghosts[0].collisionActive = true;
+    ghosts[0].releaseState = GhostReleaseState::Normal;
+    ghosts[0].releaseStepsRemaining = 0;
 
     ghosts[1].kind = GhostKind::Pink;
     ghosts[1].x = 192;
@@ -92,11 +111,14 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[1].direction = Direction::Up;
     ghosts[1].requestedDirection = Direction::Up;
     ghosts[1].offset = 0;
-    ghosts[1].speed = 0;
+    ghosts[1].speed = 1;
     ghosts[1].targetX = 0;
     ghosts[1].targetY = 0;
     ghosts[1].animationFrame = 0;
     ghosts[1].active = true;
+    ghosts[1].collisionActive = false;
+    ghosts[1].releaseState = GhostReleaseState::PinkHouseBounce;
+    ghosts[1].releaseStepsRemaining = kPinkHouseBounceSteps;
 
     ghosts[2].kind = GhostKind::Cyan;
     ghosts[2].x = 224;
@@ -109,6 +131,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[2].targetY = 0;
     ghosts[2].animationFrame = 0;
     ghosts[2].active = true;
+    ghosts[2].collisionActive = true;
+    ghosts[2].releaseState = GhostReleaseState::Normal;
+    ghosts[2].releaseStepsRemaining = 0;
 
     ghosts[3].kind = GhostKind::Orange;
     ghosts[3].x = 256;
@@ -121,12 +146,18 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[3].targetY = 0;
     ghosts[3].animationFrame = 0;
     ghosts[3].active = true;
+    ghosts[3].collisionActive = true;
+    ghosts[3].releaseState = GhostReleaseState::Normal;
+    ghosts[3].releaseStepsRemaining = 0;
 }
 
 static void reset_actor_positions(GameState* game) {
     if (!game) return;
     reset_pacman(&game->pacman);
     reset_ghosts(game->ghosts);
+    const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
+    game->ghosts[1].targetX = pinkTarget.x;
+    game->ghosts[1].targetY = pinkTarget.y;
     game->ghosts[0].targetX = game->pacman.x;
     game->ghosts[0].targetY = game->pacman.y;
     clear_held(&game->held);
@@ -208,8 +239,8 @@ static int red_target_distance(const GhostState& red, int targetX, int targetY,
     return deltaX + absolute_value(candidateY - targetY);
 }
 
-static Direction choose_ghost_direction_impl(const GameState& game, const GhostState& ghost,
-                                             int targetX, int targetY) {
+static Direction choose_red_direction_impl(const GameState& game, const GhostState& ghost,
+                                            int targetX, int targetY) {
     // This order is the historical VB6 sign-priority order: vertical choices
     // are considered before horizontal choices, with Up before Down and Left
     // before Right. It also provides a stable tie-break for equal distances.
@@ -240,48 +271,221 @@ static Direction choose_ghost_direction_impl(const GameState& game, const GhostS
     return bestDirection;
 }
 
+static bool has_non_reverse_direction(const GameState& game, const GhostState& ghost) {
+    static const Direction candidates[] = {
+        Direction::Up, Direction::Down, Direction::Left, Direction::Right
+    };
+    for (uint32_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); ++index) {
+        if (!is_reverse_direction(candidates[index], ghost.direction) &&
+            can_move(game, ghost.x, ghost.y, candidates[index])) return true;
+    }
+    return false;
+}
+
+static bool can_choose_direction(const GameState& game, const GhostState& ghost,
+                                 Direction direction, bool hasNonReverse) {
+    if (!can_move(game, ghost.x, ghost.y, direction)) return false;
+    return !hasNonReverse || !is_reverse_direction(direction, ghost.direction);
+}
+
+static Direction choose_pink_direction_impl(const GameState& game, const GhostState& ghost,
+                                             int targetX, int targetY) {
+    // basGhostAI.bas uses Sgn/Abs at a junction rather than a numeric
+    // distance. Its four independent If statements make a legal horizontal
+    // choice win over a legal vertical choice when both point at the target;
+    // Right wins over Left, and Down wins over Up within each pair.
+    const bool hasNonReverse = has_non_reverse_direction(game, ghost);
+    const int deltaX = targetX - ghost.x;
+    const int deltaY = targetY - ghost.y;
+    const int signX = deltaX < 0 ? -1 : deltaX > 0 ? 1 : 0;
+    const int signY = deltaY < 0 ? -1 : deltaY > 0 ? 1 : 0;
+    Direction selected = Direction::None;
+
+    if (signY < 0 && can_choose_direction(game, ghost, Direction::Up, hasNonReverse)) {
+        selected = Direction::Up;
+    }
+    if (signY > 0 && can_choose_direction(game, ghost, Direction::Down, hasNonReverse)) {
+        selected = Direction::Down;
+    }
+    if (signX < 0 && can_choose_direction(game, ghost, Direction::Left, hasNonReverse)) {
+        selected = Direction::Left;
+    }
+    if (signX > 0 && can_choose_direction(game, ghost, Direction::Right, hasNonReverse)) {
+        selected = Direction::Right;
+    }
+    if (selected != Direction::None) return selected;
+
+    // The historical side checks are reached only when the target-directed
+    // choice was blocked and the target shares an axis with Pink.
+    if (signY == 0) {
+        if (can_choose_direction(game, ghost, Direction::Up, hasNonReverse)) selected = Direction::Up;
+        if (can_choose_direction(game, ghost, Direction::Down, hasNonReverse)) selected = Direction::Down;
+    }
+    if (signX == 0) {
+        if (can_choose_direction(game, ghost, Direction::Left, hasNonReverse)) selected = Direction::Left;
+        if (can_choose_direction(game, ghost, Direction::Right, hasNonReverse)) selected = Direction::Right;
+    }
+    if (selected != Direction::None) return selected;
+
+    static const Direction candidates[] = {
+        Direction::Up, Direction::Down, Direction::Left, Direction::Right
+    };
+    for (uint32_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); ++index) {
+        if (can_choose_direction(game, ghost, candidates[index], hasNonReverse)) {
+            return candidates[index];
+        }
+    }
+    // A dead end has no non-reverse candidate, so the reverse is legal.
+    for (uint32_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); ++index) {
+        if (can_move(game, ghost.x, ghost.y, candidates[index])) return candidates[index];
+    }
+    return Direction::None;
+}
+
+static void move_ghost_one_step(GameState* game, GhostState* ghost) {
+    if (!game || !ghost || ghost->direction == Direction::None || ghost->speed <= 0) return;
+    // The historical level data represents the house door as part of the
+    // sprite/box convention rather than a normal maze cell. Permit only
+    // Pink's fixed x=224 upward door lane during its release; normal maze
+    // targeting still uses can_move with no house exception.
+    const bool pinkHouseDoor = ghost->kind == GhostKind::Pink &&
+        ghost->releaseState == GhostReleaseState::PinkExiting &&
+        ghost->x == 224 && ghost->direction == Direction::Up &&
+        ghost->y >= 184 && ghost->y <= 224;
+    if (ghost->offset == 0 && !can_move(*game, ghost->x, ghost->y, ghost->direction) &&
+        !pinkHouseDoor) {
+        ghost->direction = Direction::None;
+        ghost->requestedDirection = Direction::None;
+        return;
+    }
+
+    const int oldX = ghost->x;
+    const int oldY = ghost->y;
+    ghost->x += direction_x(ghost->direction) * ghost->speed;
+    ghost->y += direction_y(ghost->direction) * ghost->speed;
+    ghost->offset = next_offset(ghost->offset, ghost->direction, ghost->speed);
+    if (is_horizontal(ghost->direction) && is_tunnel_row(level_row_from_position(ghost->y))) {
+        if (ghost->x > 416) {
+            ghost->x -= 416;
+            if (ghost->kind == GhostKind::Red) game->redTunnelWrapped = true;
+            if (ghost->kind == GhostKind::Pink) game->pinkTunnelWrapped = true;
+        } else if (ghost->x < 16) {
+            ghost->x += 416;
+            if (ghost->kind == GhostKind::Red) game->redTunnelWrapped = true;
+            if (ghost->kind == GhostKind::Pink) game->pinkTunnelWrapped = true;
+        }
+    }
+    ghost->animationFrame = static_cast<uint8_t>((ghost->animationFrame + 1u) % 2u);
+    if (oldX != ghost->x || oldY != ghost->y) game->visualDirty = true;
+}
+
+static void update_moving_ghost(GameState* game, GhostState* ghost,
+                                int targetX, int targetY, bool pinkPolicy) {
+    if (!game || !ghost || !ghost->active || ghost->speed <= 0) return;
+    if (ghost->offset == 0) {
+        const Direction selected = pinkPolicy
+            ? choose_pink_direction_impl(*game, *ghost, targetX, targetY)
+            : choose_red_direction_impl(*game, *ghost, targetX, targetY);
+        if (selected != Direction::None) {
+            ghost->requestedDirection = selected;
+            if (ghost->direction != selected) {
+                ghost->direction = selected;
+                game->visualDirty = true;
+            }
+        } else {
+            ghost->direction = Direction::None;
+        }
+    }
+
+    // Direction is selected only at an aligned tile center. The committed
+    // direction then carries the ghost through the next 15 logical pixels.
+    move_ghost_one_step(game, ghost);
+}
+
 static void update_red_ghost(GameState* game) {
     if (!game) return;
     GhostState& red = game->ghosts[0];
     red.targetX = game->pacman.x;
     red.targetY = game->pacman.y;
-    if (!red.active || red.speed <= 0) return;
+    update_moving_ghost(game, &red, red.targetX, red.targetY, false);
+}
 
-    if (red.offset == 0) {
-        const Direction selected = choose_ghost_direction_impl(*game, red, red.targetX, red.targetY);
-        if (selected != Direction::None) {
-            red.requestedDirection = selected;
-            if (red.direction != selected) {
-                red.direction = selected;
+static void update_pink_house_release(GameState* game) {
+    if (!game) return;
+    GhostState& pink = game->ghosts[1];
+    if (pink.releaseState == GhostReleaseState::PinkHouseBounce) {
+        if (pink.offset == 0) {
+            if (pink.x == 192 && pink.y == 224 && pink.direction == Direction::Up) {
+                pink.direction = Direction::Down;
+            } else if (pink.x == 192 && pink.y == 240 && pink.direction == Direction::Down) {
+                pink.direction = Direction::Up;
+            }
+            if (pink.releaseStepsRemaining > 0) --pink.releaseStepsRemaining;
+            if (pink.releaseStepsRemaining == 0 && pink.x == 192 && pink.y == 224) {
+                pink.direction = Direction::Right;
+                pink.requestedDirection = Direction::Right;
+                pink.releaseState = GhostReleaseState::PinkToCenter;
+                game->pinkReleaseStarted = true;
                 game->visualDirty = true;
             }
-        } else {
-            red.direction = Direction::None;
         }
+        move_ghost_one_step(game, &pink);
+        return;
     }
 
-    // The direction is validated at the aligned tile center above. During the
-    // following 15 pixels, query the committed direction only through the
-    // alignment gate; re-querying from an intermediate coordinate can map to
-    // the previous tile and strand a ghost one pixel before a turn.
-    if (red.direction == Direction::None) return;
-    if (red.offset == 0 && !can_move(*game, red.x, red.y, red.direction)) return;
-    const int oldX = red.x;
-    const int oldY = red.y;
-    red.x += direction_x(red.direction) * red.speed;
-    red.y += direction_y(red.direction) * red.speed;
-    red.offset = next_offset(red.offset, red.direction, red.speed);
-    if (is_horizontal(red.direction) && is_tunnel_row(level_row_from_position(red.y))) {
-        if (red.x > 416) {
-            red.x -= 416;
-            game->redTunnelWrapped = true;
-        } else if (red.x < 16) {
-            red.x += 416;
-            game->redTunnelWrapped = true;
+    if (pink.releaseState == GhostReleaseState::PinkToCenter) {
+        if (pink.offset == 0 && pink.x == 224 && pink.y == 224) {
+            pink.direction = Direction::Up;
+            pink.requestedDirection = Direction::Up;
+            pink.releaseState = GhostReleaseState::PinkExiting;
+            game->visualDirty = true;
+        }
+        move_ghost_one_step(game, &pink);
+        return;
+    }
+
+    if (pink.releaseState == GhostReleaseState::PinkExiting) {
+        if (pink.offset == 0 && pink.x == 224 && pink.y == 184) {
+            pink.releaseState = GhostReleaseState::Normal;
+            pink.collisionActive = true;
+            pink.direction = Direction::Right;
+            pink.requestedDirection = Direction::Right;
+            pink.offset = 8;
+            game->pinkReleaseCompleted = true;
+            game->visualDirty = true;
+            return;
+        }
+        move_ghost_one_step(game, &pink);
+        // Ghost positions in the VB6 release routine use Offset=8 at y=184,
+        // while the shared native mover aligns at Offset=0. Clamp the single
+        // crossing step to the historical outside-house state instead of
+        // allowing the fixed route to enter the row above the door.
+        if (pink.y < 184) {
+            pink.y = 184;
+            pink.offset = 8;
+            pink.releaseState = GhostReleaseState::Normal;
+            pink.collisionActive = true;
+            pink.direction = Direction::Right;
+            pink.requestedDirection = Direction::Right;
+            game->pinkReleaseCompleted = true;
+            game->visualDirty = true;
         }
     }
-    red.animationFrame = static_cast<uint8_t>((red.animationFrame + 1u) % 2u);
-    if (oldX != red.x || oldY != red.y) game->visualDirty = true;
+}
+
+static void update_pink_ghost(GameState* game) {
+    if (!game) return;
+    GhostState& pink = game->ghosts[1];
+    if (!pink.active) return;
+    const GhostTarget target = calculate_pink_target(*game, game->pacman);
+    pink.targetX = target.x;
+    pink.targetY = target.y;
+    if (pink.releaseState != GhostReleaseState::Normal) {
+        update_pink_house_release(game);
+        return;
+    }
+    pink.collisionActive = true;
+    update_moving_ghost(game, &pink, pink.targetX, pink.targetY, true);
 }
 
 static void enter_dying(GameState* game) {
@@ -338,11 +542,16 @@ static void update_ready_after_death(GameState* game) {
 
 Direction choose_ghost_direction(const GameState& game, const GhostState& ghost,
                                  int targetX, int targetY) {
-    return choose_ghost_direction_impl(game, ghost, targetX, targetY);
+    return choose_red_direction_impl(game, ghost, targetX, targetY);
+}
+
+Direction choose_pink_direction(const GameState& game, const GhostState& ghost,
+                                int targetX, int targetY) {
+    return choose_pink_direction_impl(game, ghost, targetX, targetY);
 }
 
 bool pacman_collides_with_ghost(const PacManState& pacman, const GhostState& ghost) {
-    if (!ghost.active) return false;
+    if (!ghost.active || !ghost.collisionActive) return false;
     return absolute_value(pacman.x - ghost.x) < 16 && absolute_value(pacman.y - ghost.y) < 16;
 }
 
@@ -356,10 +565,56 @@ const char* ghost_kind_name(GhostKind kind) {
     return "unknown";
 }
 
+const char* ghost_release_state_name(GhostReleaseState state) {
+    switch (state) {
+    case GhostReleaseState::Normal: return "normal";
+    case GhostReleaseState::PinkHouseBounce: return "house-bounce";
+    case GhostReleaseState::PinkToCenter: return "to-center";
+    case GhostReleaseState::PinkExiting: return "exiting";
+    }
+    return "unknown";
+}
+
+GhostTarget calculate_pink_target(const GameState& game, const PacManState& pacman) {
+    // basGhostAI.bas stores Px/Py and X/Y as integer tile coordinates and
+    // projects Pink four tiles (64 logical pixels) ahead only when the
+    // historical Manhattan tile separation is greater than two.
+    const int pacmanTileX = historical_tile_coordinate(pacman.x);
+    const int pacmanTileY = historical_tile_coordinate(pacman.y);
+    const int pinkTileX = historical_tile_coordinate(game.ghosts[1].x);
+    const int pinkTileY = historical_tile_coordinate(game.ghosts[1].y);
+    const bool farEnough = absolute_value(pacmanTileX - pinkTileX) +
+        absolute_value(pacmanTileY - pinkTileY) > 2;
+
+    int targetX = pacman.x;
+    int targetY = pacman.y;
+    if (farEnough) {
+        const int projection = direction_x(pacman.direction) * 4 * kPacManTileSize;
+        targetX += projection;
+        // Historical coordinate quirk: the VB6 source uses XD(Direction) for
+        // Py as well as Px. Preserve this observable result: left/right move
+        // both coordinates; up/down project neither coordinate.
+        targetY += projection;
+    }
+
+    targetY = clamp_int(targetY, 8, kPacManMazeHeight - 8);
+    if (is_tunnel_row(level_row_from_position(targetY))) {
+        targetX = wrap_tunnel_position(targetX);
+    } else {
+        targetX = clamp_int(targetX, 16, 431);
+    }
+    return GhostTarget{targetX, targetY};
+}
+
 void game_initialize(GameState* game) {
     if (!game) return;
     reset_actor_positions(game);
     level_initialize(&game->level);
+    game->ghosts[0].targetX = game->pacman.x;
+    game->ghosts[0].targetY = game->pacman.y;
+    const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
+    game->ghosts[1].targetX = pinkTarget.x;
+    game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
     game->levelNumber = 1;
     game->lives = kPacManInitialLives;
@@ -378,6 +633,9 @@ void game_initialize(GameState* game) {
     game->becameBlocked = false;
     game->tunnelWrapped = false;
     game->redTunnelWrapped = false;
+    game->pinkTunnelWrapped = false;
+    game->pinkReleaseStarted = false;
+    game->pinkReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -406,6 +664,11 @@ void game_reset_level(GameState* game) {
     level_initialize(&game->level);
     if (game->levelNumber != 0xFFFFFFFFu) ++game->levelNumber;
     reset_actor_positions(game);
+    game->ghosts[0].targetX = game->pacman.x;
+    game->ghosts[0].targetY = game->pacman.y;
+    const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
+    game->ghosts[1].targetX = pinkTarget.x;
+    game->ghosts[1].targetY = pinkTarget.y;
     game->playState = PlayState::Playing;
     game->levelCompleteStepsRemaining = 0;
     game->deathStepsRemaining = 0;
@@ -419,6 +682,11 @@ bool game_restart_session(GameState* game) {
     if (!game || game->playState != PlayState::GameOver) return false;
     level_initialize(&game->level);
     reset_actor_positions(game);
+    game->ghosts[0].targetX = game->pacman.x;
+    game->ghosts[0].targetY = game->pacman.y;
+    const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
+    game->ghosts[1].targetX = pinkTarget.x;
+    game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
     game->levelNumber = 1;
     game->lives = kPacManInitialLives;
@@ -437,6 +705,9 @@ bool game_restart_session(GameState* game) {
     game->becameBlocked = false;
     game->tunnelWrapped = false;
     game->redTunnelWrapped = false;
+    game->pinkTunnelWrapped = false;
+    game->pinkReleaseStarted = false;
+    game->pinkReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -496,6 +767,9 @@ void game_update(GameState* game) {
     game->becameBlocked = false;
     game->tunnelWrapped = false;
     game->redTunnelWrapped = false;
+    game->pinkTunnelWrapped = false;
+    game->pinkReleaseStarted = false;
+    game->pinkReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -584,9 +858,11 @@ void game_update(GameState* game) {
     if (pacman.mouth > 2 || pacman.mouth < 1) pacman.mouthDirection = -pacman.mouthDirection;
     if (pacman.mouth != oldMouth) game->visualDirty = true;
 
-    // Red uses a bounded historical target choice; Pink, Cyan, and Orange
-    // remain stationary. Collision is sampled after both actor updates.
+    // Update ordering is explicit: Pac-Man, mouth animation, Red, Pink, then
+    // one collision sample. Cyan and Orange remain stationary. Pink targets
+    // the Pac-Man position produced by this step, not the previous frame.
     update_red_ghost(game);
+    update_pink_ghost(game);
     if (!game->suppressGhostCollisionsForValidation && pacman_hits_any_ghost(*game)) {
         enter_dying(game);
     }

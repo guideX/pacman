@@ -1,0 +1,4 @@
+D:/dev/pacman/guidexos/build-pink/CMakeFiles/pacman-danger-validation.dir
+D:/dev/pacman/guidexos/build-pink/CMakeFiles/pacman-game-tests.dir
+D:/dev/pacman/guidexos/build-pink/CMakeFiles/edit_cache.dir
+D:/dev/pacman/guidexos/build-pink/CMakeFiles/rebuild_cache.dir

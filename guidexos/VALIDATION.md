@@ -72,18 +72,36 @@ frame per direction.
 
 The verified update order is input, aligned Pac-Man turn and wall handling,
 next-tile pill consumption and level-completion check, Pac-Man movement and
-tunnel wrap, mouth animation, Red movement, collision, then the simulation
-step/state-timer advance and dirty-frame marking. If the final pill is consumed
-on an update, LevelComplete returns before Red movement or collision on that
-update. All four non-Playing states gate Red movement.
+tunnel wrap, mouth animation, Red movement, Pink movement, one collision
+sample, then the simulation step/state-timer advance and dirty-frame marking.
+If the final pill is consumed on an update, LevelComplete returns before either
+moving ghost or collision on that update. All four non-Playing states gate both
+moving ghosts, and one collision sample suppresses duplicate Red/Pink overlap
+life loss.
 
-Pink, Cyan, and Orange remain stationary at `(192,224)`, `(224,240)`, and
-`(256,224)`. Their positions are asserted by host-independent tests and by the
-hosted captures while Red moves. The ordinary danger placement remains
-test-only and temporarily overlaps Red with Pac-Man for the existing three-life
-regression. The Red movement mode instead pins a reachable Pac-Man target for
-observation and arms a collision by placing Pac-Man 32 pixels ahead of moving
-Red at the tunnel edge; it does not force an initial overlap.
+Pink starts at `(192,224)`, facing Up, in `PinkHouseBounce` with collision
+inactive. The historical VB6 source bounces Ghost(2), moves it right to
+`(224,224)`, and sends it up the fixed house door lane to `(224,184)`. Because
+Cyan remains stationary in this milestone, the port uses a deterministic two-
+alignment bounce wait before the same route. Pink becomes collision-active only
+after the release state becomes `normal`; death, level reset, and Game Over
+restart restore the house state.
+
+Pink's pure target helper keeps the historical four-tile projection gate:
+project only when integer tile separation from Pink is greater than two, then
+use `targetX = pacmanX + XD(direction)*64` and
+`targetY = pacmanY + XD(direction)*64`. The use of `XD` for Y is the observable
+historical coordinate quirk, so Right/Left project both axes and Up/Down project
+neither. The helper uses logical coordinates, clamps normal bounds, wraps a
+tunnel-row target safely, and does not change Red's direct target. Pink's
+selection is the VB6 sign-priority sequence with Up, Down, Left, Right fallback,
+reverse exclusion when alternatives exist, and reverse allowed at a dead end.
+
+Cyan and Orange remain at `(224,240)` and `(256,224)`. The ordinary danger
+placement remains test-only and temporarily overlaps Red with Pac-Man for the
+existing three-life regression. The Red movement mode keeps Red moving, and the
+Pink movement mode pins Pac-Man still, suppresses unrelated collisions, and
+arms one deterministic moving-Pink collision after route captures.
 
 The reusable Red harness is `tools/validate_hosted_red_movement.ps1`. It builds
 and launches only the validation package, uses one owned experimental server,
@@ -91,3 +109,12 @@ records runtime/window/frame/compositor/paint/capture generations, captures
 initial, corridor, intersection, tunnel, Dying, and Ready frames, and cleans up
 the exact server process tree in `try/finally`. It is off by default and does
 not change the production package.
+
+The reusable Pink harness is `tools/validate_hosted_pink_movement.ps1`. Build
+the same validation package with `PACMAN_HOSTED_DANGER_TEST=ON` and
+`PACMAN_HOSTED_PINK_MOVEMENT_TEST=ON`; it captures the initial house position,
+house-exit transition, corridor movement, projected-target turn, distant route,
+moving collision, and Ready house reset. It reports runtime/window identity,
+application frame sequence, frame/paint/capture generations, actor coordinates,
+directions, targets, release state, and screenshot paths. Its compile-time
+marker and forced collision behavior are absent from the production ELF.

@@ -17,6 +17,10 @@
 #define PACMAN_HOSTED_RED_MOVEMENT_TEST 0
 #endif
 
+#ifndef PACMAN_HOSTED_PINK_MOVEMENT_TEST
+#define PACMAN_HOSTED_PINK_MOVEMENT_TEST 0
+#endif
+
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     for (uint64_t i = 0; i < bytes; ++i) output[i] = static_cast<uint8_t>(value);
@@ -71,6 +75,24 @@ static void append_frame_number(char* message, uint32_t* index, uint32_t capacit
     while (length > 0 && *index + 1u < capacity) message[(*index)++] = digits[--length];
 }
 
+static void append_validation_ghost(char* message, uint32_t* index, uint32_t capacity,
+                                    const char* label, const GhostState& ghost) {
+    append_frame_text(message, index, capacity, label);
+    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.x));
+    append_frame_text(message, index, capacity, ",");
+    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.y));
+    append_frame_text(message, index, capacity, " dir=");
+    append_frame_text(message, index, capacity, game_direction_name(ghost.direction));
+    append_frame_text(message, index, capacity, " target=");
+    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.targetX));
+    append_frame_text(message, index, capacity, ",");
+    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.targetY));
+    append_frame_text(message, index, capacity, " release=");
+    append_frame_text(message, index, capacity, ghost_release_state_name(ghost.releaseState));
+    append_frame_text(message, index, capacity, " anim=");
+    append_frame_number(message, index, capacity, ghost.animationFrame);
+}
+
 static const char* validation_state_name(PlayState state) {
     switch (state) {
     case PlayState::Playing: return "Playing";
@@ -85,7 +107,7 @@ static const char* validation_state_name(PlayState state) {
 static void log_validation_frame(gx_app_context* ctx, gx_handle window, const GameState& game,
                                  uint64_t frameSequence, gx_result result) {
     if (!ctx || !ctx->host || !ctx->host->log) return;
-    char message[320];
+    char message[640];
     uint32_t index = 0;
     append_frame_text(message, &index, sizeof(message), "PacMan frame seq=");
     append_frame_number(message, &index, sizeof(message), frameSequence);
@@ -107,18 +129,10 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.pacman.y));
     append_frame_text(message, &index, sizeof(message), " size=448x553 stride=1792 bytes=990976 result=");
     append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(static_cast<uint32_t>(result)));
-    append_frame_text(message, &index, sizeof(message), " red=");
-    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].x));
-    append_frame_text(message, &index, sizeof(message), ",");
-    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].y));
-    append_frame_text(message, &index, sizeof(message), " dir=");
-    append_frame_text(message, &index, sizeof(message), game_direction_name(game.ghosts[0].direction));
-    append_frame_text(message, &index, sizeof(message), " target=");
-    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].targetX));
-    append_frame_text(message, &index, sizeof(message), ",");
-    append_frame_number(message, &index, sizeof(message), static_cast<uint64_t>(game.ghosts[0].targetY));
-    append_frame_text(message, &index, sizeof(message), " anim=");
-    append_frame_number(message, &index, sizeof(message), game.ghosts[0].animationFrame);
+    append_validation_ghost(message, &index, sizeof(message), " red=", game.ghosts[0]);
+    append_validation_ghost(message, &index, sizeof(message), " pink=", game.ghosts[1]);
+    append_validation_ghost(message, &index, sizeof(message), " cyan=", game.ghosts[2]);
+    append_validation_ghost(message, &index, sizeof(message), " orange=", game.ghosts[3]);
     message[index] = '\0';
     ctx->host->log(ctx, message);
 }
@@ -269,7 +283,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     GameState game;
     game_initialize(&game);
 #if PACMAN_ENABLE_DIAGNOSTICS
-    ctx->host->log(ctx, "PacMan ghosts initialized: Red moving; 3 stationary entities");
+    ctx->host->log(ctx, "PacMan ghosts initialized: Red and Pink moving; Cyan and Orange stationary");
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
         const GhostState& ghost = game.ghosts[index];
         ctx->host->log(ctx, ghost_kind_name(ghost.kind));
@@ -291,6 +305,26 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     game.suppressGhostCollisionsForValidation = true;
     game.visualDirty = true;
     ctx->host->log(ctx, "PacMan hosted Red movement validation enabled");
+#endif
+#if PACMAN_HOSTED_PINK_MOVEMENT_TEST
+    // Validation-only stable target: Pac-Man remains still while Pink's
+    // house route and projected target are observed. This code is absent from
+    // the production ELF and has no input/cheat-key path.
+    game.pacman.x = 64;
+    game.pacman.y = 232;
+    game.pacman.direction = Direction::Right;
+    game.pacman.facingDirection = Direction::Right;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    {
+        const GhostTarget pinkTarget = calculate_pink_target(game, game.pacman);
+        game.ghosts[1].targetX = pinkTarget.x;
+        game.ghosts[1].targetY = pinkTarget.y;
+    }
+    game.suppressGhostCollisionsForValidation = true;
+    game.visualDirty = true;
+    ctx->host->log(ctx, "PacMan hosted Pink movement validation enabled");
 #endif
 
     gx_handle window = 0;
@@ -422,6 +456,24 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 game.ghosts[0].targetY = collisionTargetY;
                 game.suppressGhostCollisionsForValidation = false;
                 ctx->host->log(ctx, "PacMan hosted Red movement collision window enabled");
+            }
+#endif
+#if PACMAN_HOSTED_PINK_MOVEMENT_TEST
+            if (game.playState == PlayState::Playing && game.suppressGhostCollisionsForValidation &&
+                game.ghosts[1].releaseState == GhostReleaseState::Normal &&
+                game.simulationSteps >= 240u) {
+                // Put Pac-Man on the moving Pink body for one deterministic
+                // validation collision; normal production collision code does
+                // the actual death transition on the following update.
+                game.pacman.x = game.ghosts[1].x;
+                game.pacman.y = game.ghosts[1].y;
+                game.pacman.direction = Direction::None;
+                game.pacman.facingDirection = Direction::None;
+                game.pacman.requestedDirection = Direction::None;
+                game.pacman.offset = 0;
+                game.pacman.speed = 0;
+                game.suppressGhostCollisionsForValidation = false;
+                ctx->host->log(ctx, "PacMan hosted Pink movement collision window enabled");
             }
 #endif
             game_update(&game);

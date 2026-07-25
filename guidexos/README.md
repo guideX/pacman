@@ -74,7 +74,15 @@ cmake --build build-red --target pacman-danger-validation
 powershell -ExecutionPolicy Bypass -File tools\validate_hosted_red_movement.ps1
 ```
 
-Both hooks are compile-time validation behavior, are off by default, are isolated from `D:\Apps\PacMan`, and are not exposed through a production key.
+The bounded Pink movement validation uses the same danger package, adds only the `PACMAN_HOSTED_PINK_MOVEMENT_TEST=ON` hook, pins Pac-Man still, and captures Pink's house release, projected-target route, tunnel/distant movement, collision, and Ready reset:
+
+```powershell
+cmake -S . -B build-pink -G Ninja -DPACMAN_HOSTED_DANGER_TEST=ON -DPACMAN_HOSTED_PINK_MOVEMENT_TEST=ON -DPACMAN_ENABLE_DIAGNOSTICS=ON -DGUIDEXOS_SERVER_ROOT=D:\dev\guideXOSServer -DGUIDEXOS_PACKAGE_ROOT=D:\Apps
+cmake --build build-pink --target pacman-danger-validation
+powershell -ExecutionPolicy Bypass -File tools\validate_hosted_pink_movement.ps1
+```
+
+All hooks are compile-time validation behavior, are off by default, are isolated from `D:\Apps\PacMan`, and are not exposed through a production key.
 
 ## Native platform additions
 
@@ -125,13 +133,13 @@ The values below are taken from `basPacSetUp.bas` and `basPacman.bas`, not infer
 - Space cells are blank floor. The port classifies the row-14 outer spaces as `Tunnel` and the central rows 13–15, columns 11–16 as `GhostHouse`; neither special region receives pills.
 - Historical completion is `DotsLeft < 1`. The VB6 timer immediately increments the level, awards a 1000-point clear bonus, resets the level and positions, and starts the intro again. The native scoring milestone intentionally does not add that bonus or any other non-pill score; it presents `LevelComplete` for 100 fixed steps (1 second) before resetting.
 
-## Stationary ghost and lives milestone
+## Ghost layout and lives milestone
 
 `Initialize` sets `Pacman.Lives = 3`. `DefaultPositions` places Red at `(224,184)`, Pink at `(192,224)`, Cyan at `(224,240)`, and Orange at `(256,224)`; their historical directions are Red `2 + Rnd`, Pink up, Cyan down, and Orange up. The native port uses Red-left for deterministic stationary resets.
 
 `ShowBlit` uses ghost body source x positions `0`, `32`, `64`, and `96`, direction source y `Direction * 32`, and the normal ghost mask at source x `192`. The Native ELF retains this `SRCAND`/`SRCPAINT` equivalent composition and draws ghosts after pills, with ghosts after Pac-Man on overlap as in historical `ShowSprites`.
 
-`TestCollisions` uses strict center thresholds `Abs(Pacman.Xpos - Ghost.Xpos) < 16` and `Abs(Pacman.Ypos - Ghost.Ypos) < 16`. The native collision helper applies the same rule to active stationary ghosts and never samples rendered pixels.
+`TestCollisions` uses strict center thresholds `Abs(Pacman.Xpos - Ghost.Xpos) < 16` and `Abs(Pacman.Ypos - Ghost.Ypos) < 16`. The native collision helper applies the same rule to active ghosts and never samples rendered pixels; Pink is collision-inactive until it reaches its normal outside-house route.
 
 Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames. The status strip shows the total remaining lives as a number, including zero in Game Over.
 
@@ -171,6 +179,36 @@ movement/tunnel wrap, mouth animation, Red movement, collision, then the
 simulation-step/state-timer advance and dirty-frame marking. Existing
 completion-before-Red/collision behavior is preserved.
 
+## Pink ghost movement milestone
+
+`basGhostAI.bas` identifies Pink as Ghost(2). `DefaultPositions` places it at
+`(192,224)`, facing Up, with `InGame=False`, inside the central ghost house.
+The historical source bounces Pink vertically, then moves it right to
+`(224,224)` and up to the outside-house activation point at `y=184`. Cyan is
+not moved in this port, so Pink uses a deterministic two-alignment bounce
+wait before this same route; the fixed door lane is the only house exception
+to the normal logical maze check. Pink becomes collision-active once it reaches
+that outside-house state and its release state is reset after death, level
+completion, and Game Over restart.
+
+Pink's target helper preserves the exact historical formula. It computes the
+integer tile separation and projects only when it is greater than two tiles.
+The projection is four tiles (64 logical pixels) and uses the Pac-Man
+horizontal delta for both axes: `targetX = pacmanX + XD(direction)*64` and
+`targetY = pacmanY + XD(direction)*64`. Thus Right gives `(x+64,y+64)`, Left
+gives `(x-64,y-64)`, and Up/Down give no projection. This is an observable
+historical coordinate quirk, not a correction; the helper clamps/wraps targets
+at logical bounds without changing Red's direct target.
+
+Pink chooses only at aligned tile centers, excludes the immediate reverse when
+another legal direction exists, reverses at dead ends, and uses the VB6
+sign-priority order. A target-directed horizontal choice overwrites a
+target-directed vertical choice, with Right over Left and Down over Up; the
+fallback order is Up, Down, Left, Right. The shared mover advances at one
+logical pixel per 10 ms step, wraps only on row 14, and selects the historical
+directional sprite row with the existing mask composition. Cyan and Orange
+remain stationary.
+
 ## Current limitations and next milestone
 
-The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red movement, three stationary historical ghosts, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is movement setup, next-tile pill consumption, level-complete check, Pac-Man movement, Red movement, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. Pink movement, Cyan movement, Orange movement, scatter/chase schedules, frightened mode, ghost eating, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is Pink ghost movement using its historical projected Pac-Man target while Red keeps its validated direct target.
+The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red and Pink movement, two moving historical ghosts, two stationary historical ghosts, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is movement setup, next-tile pill consumption, level-complete check, Pac-Man movement, Red movement, Pink movement, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. Cyan movement, Orange movement, scatter/chase schedules, frightened mode, ghost eating, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is Cyan ghost movement using its exact historical target and Red interaction while Orange remains stationary.
