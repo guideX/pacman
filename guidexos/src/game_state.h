@@ -47,13 +47,13 @@ enum class GhostKind : uint8_t {
     Orange = 3
 };
 
-// Pink is the only house ghost with an active release sequence in this
-// milestone. Red starts outside the house; Cyan and Orange remain stationary.
 enum class GhostReleaseState : uint8_t {
     Normal,
     PinkHouseBounce,
     PinkToCenter,
-    PinkExiting
+    PinkExiting,
+    CyanHouseBounce,
+    CyanExiting
 };
 
 struct GhostState {
@@ -97,8 +97,11 @@ struct GameState {
     bool tunnelWrapped;
     bool redTunnelWrapped;
     bool pinkTunnelWrapped;
+    bool cyanTunnelWrapped;
     bool pinkReleaseStarted;
     bool pinkReleaseCompleted;
+    bool cyanReleaseStarted;
+    bool cyanReleaseCompleted;
     bool normalPillConsumed;
     bool powerPillConsumed;
     bool scoreChanged;

@@ -237,8 +237,16 @@ GUIDEXOS_SERVER_ROOT:PATH=D:/dev/guideXOSServer
 //Enable gated Native ELF gameplay diagnostics
 PACMAN_ENABLE_DIAGNOSTICS:BOOL=ON
 
+//Enable isolated hosted Cyan movement validation without forced
+// collisions
+PACMAN_HOSTED_CYAN_MOVEMENT_TEST:BOOL=OFF
+
 //Enable test-only automatic Red overlap for hosted danger validation
 PACMAN_HOSTED_DANGER_TEST:BOOL=ON
+
+//Enable isolated hosted Pink movement validation without forced
+// collisions
+PACMAN_HOSTED_PINK_MOVEMENT_TEST:BOOL=OFF
 
 //Enable isolated hosted Red movement validation without forced
 // collisions

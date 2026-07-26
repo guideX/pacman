@@ -26,7 +26,11 @@ Direction choose_ghost_direction(const GameState& game, const GhostState& ghost,
                                  int targetX, int targetY);
 Direction choose_pink_direction(const GameState& game, const GhostState& ghost,
                                 int targetX, int targetY);
+Direction choose_cyan_direction(const GameState& game, const GhostState& ghost,
+                                int targetX, int targetY);
 GhostTarget calculate_pink_target(const GameState& game, const PacManState& pacman);
+GhostTarget calculate_cyan_target(const GameState& game, const PacManState& pacman,
+                                  const GhostState& red);
 Direction game_direction_for_key(int keyCode);
 void game_press_direction(GameState* game, Direction direction);
 void game_release_direction(GameState* game, Direction direction);

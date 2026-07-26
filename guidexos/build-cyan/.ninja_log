@@ -1,0 +1,23 @@
+# ninja log v7
+3	589	8067155292849487	native-objects/bitmap_loader.o	5aa3b75abf7fab5d
+3	589	8067155292849487	D:/dev/pacman/guidexos/build-cyan/native-objects/bitmap_loader.o	5aa3b75abf7fab5d
+10	690	8067155293862873	native-objects/game.o	6c8107a2cdc6ebb3
+10	690	8067155293862873	D:/dev/pacman/guidexos/build-cyan/native-objects/game.o	6c8107a2cdc6ebb3
+589	702	8067155293916422	native-objects/level.o	a3d8790fe6d8139d
+589	702	8067155293916422	D:/dev/pacman/guidexos/build-cyan/native-objects/level.o	a3d8790fe6d8139d
+702	1349	8067155300457639	native-objects/renderer.o	e10de37f3df486b7
+702	1349	8067155300457639	D:/dev/pacman/guidexos/build-cyan/native-objects/renderer.o	e10de37f3df486b7
+691	1541	8067155302354966	native-objects/main.o	790577aa06718dea
+691	1541	8067155302354966	D:/dev/pacman/guidexos/build-cyan/native-objects/main.o	790577aa06718dea
+1542	1752	8067155302354966	CMakeFiles/pacman-game-tests.dir/src/game.cpp.obj	dbd27bfdb56743cd
+1753	1839	8067155304558211	CMakeFiles/pacman-game-tests.dir/src/level.cpp.obj	7ce7be4ffcf776b4
+1349	1897	8067155300457639	CMakeFiles/pacman-game-tests.dir/tests/game_logic_test.cpp.obj	a42120544c070227
+1839	1916	8067155306090208	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	a31a8158ff2efa09
+1898	2029	8067155306010092	pacman-game-tests.exe	5d572ae8837ed099
+1916	2132	8067155306181859	CMakeFiles/pacman-danger-validation.util	6f03bb39b97d15df
+6	103	8067159791095429	native-objects/game.o	6c8107a2cdc6ebb3
+6	103	8067159791095429	D:/dev/pacman/guidexos/build-cyan/native-objects/game.o	6c8107a2cdc6ebb3
+14	153	8067159790307177	CMakeFiles/pacman-game-tests.dir/src/game.cpp.obj	dbd27bfdb56743cd
+103	169	8067159791711977	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	a31a8158ff2efa09
+153	258	8067159791689227	pacman-game-tests.exe	5d572ae8837ed099
+169	333	8067159791711977	CMakeFiles/pacman-danger-validation.util	6f03bb39b97d15df

@@ -19,7 +19,9 @@ static bool is_horizontal(Direction direction) {
 }
 
 static int absolute_value(int value) {
-    return value < 0 ? -value : value;
+    const int64_t wide = static_cast<int64_t>(value);
+    const int64_t magnitude = wide < 0 ? -wide : wide;
+    return magnitude > 0x7FFFFFFFll ? 0x7FFFFFFF : static_cast<int>(magnitude);
 }
 
 // Count aligned house bounces, not render or simulation ticks. Two direction
@@ -34,8 +36,9 @@ static int clamp_int(int value, int minimum, int maximum) {
 }
 
 static int historical_tile_coordinate(int position) {
-    if (position >= 0) return position / kPacManTileSize;
-    return -(((-position) + kPacManTileSize - 1) / kPacManTileSize);
+    const int64_t wide = static_cast<int64_t>(position);
+    if (wide >= 0) return static_cast<int>(wide / kPacManTileSize);
+    return static_cast<int>(-((-wide + kPacManTileSize - 1) / kPacManTileSize));
 }
 
 static void clear_held(HeldDirections* held) {
@@ -126,14 +129,14 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[2].direction = Direction::Down;
     ghosts[2].requestedDirection = Direction::Down;
     ghosts[2].offset = 0;
-    ghosts[2].speed = 0;
+    ghosts[2].speed = 1;
     ghosts[2].targetX = 0;
     ghosts[2].targetY = 0;
     ghosts[2].animationFrame = 0;
     ghosts[2].active = true;
-    ghosts[2].collisionActive = true;
-    ghosts[2].releaseState = GhostReleaseState::Normal;
-    ghosts[2].releaseStepsRemaining = 0;
+    ghosts[2].collisionActive = false;
+    ghosts[2].releaseState = GhostReleaseState::CyanHouseBounce;
+    ghosts[2].releaseStepsRemaining = 2;
 
     ghosts[3].kind = GhostKind::Orange;
     ghosts[3].x = 256;
@@ -158,6 +161,9 @@ static void reset_actor_positions(GameState* game) {
     const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
+    const GhostTarget cyanTarget = calculate_cyan_target(*game, game->pacman, game->ghosts[0]);
+    game->ghosts[2].targetX = cyanTarget.x;
+    game->ghosts[2].targetY = cyanTarget.y;
     game->ghosts[0].targetX = game->pacman.x;
     game->ghosts[0].targetY = game->pacman.y;
     clear_held(&game->held);
@@ -295,8 +301,8 @@ static Direction choose_pink_direction_impl(const GameState& game, const GhostSt
     // choice win over a legal vertical choice when both point at the target;
     // Right wins over Left, and Down wins over Up within each pair.
     const bool hasNonReverse = has_non_reverse_direction(game, ghost);
-    const int deltaX = targetX - ghost.x;
-    const int deltaY = targetY - ghost.y;
+    const int64_t deltaX = static_cast<int64_t>(targetX) - ghost.x;
+    const int64_t deltaY = static_cast<int64_t>(targetY) - ghost.y;
     const int signX = deltaX < 0 ? -1 : deltaX > 0 ? 1 : 0;
     const int signY = deltaY < 0 ? -1 : deltaY > 0 ? 1 : 0;
     Direction selected = Direction::None;
@@ -345,15 +351,18 @@ static Direction choose_pink_direction_impl(const GameState& game, const GhostSt
 static void move_ghost_one_step(GameState* game, GhostState* ghost) {
     if (!game || !ghost || ghost->direction == Direction::None || ghost->speed <= 0) return;
     // The historical level data represents the house door as part of the
-    // sprite/box convention rather than a normal maze cell. Permit only
-    // Pink's fixed x=224 upward door lane during its release; normal maze
+    // sprite/box convention rather than a normal maze cell. Permit only the
+    // fixed x=224 upward door lane during Pink or Cyan release; normal maze
     // targeting still uses can_move with no house exception.
-    const bool pinkHouseDoor = ghost->kind == GhostKind::Pink &&
-        ghost->releaseState == GhostReleaseState::PinkExiting &&
+    const bool houseDoor = (ghost->kind == GhostKind::Pink &&
+        ghost->releaseState == GhostReleaseState::PinkExiting) ||
+        (ghost->kind == GhostKind::Cyan &&
+        ghost->releaseState == GhostReleaseState::CyanExiting);
+    const bool houseDoorLane = houseDoor &&
         ghost->x == 224 && ghost->direction == Direction::Up &&
         ghost->y >= 184 && ghost->y <= 224;
     if (ghost->offset == 0 && !can_move(*game, ghost->x, ghost->y, ghost->direction) &&
-        !pinkHouseDoor) {
+        !houseDoorLane) {
         ghost->direction = Direction::None;
         ghost->requestedDirection = Direction::None;
         return;
@@ -369,21 +378,23 @@ static void move_ghost_one_step(GameState* game, GhostState* ghost) {
             ghost->x -= 416;
             if (ghost->kind == GhostKind::Red) game->redTunnelWrapped = true;
             if (ghost->kind == GhostKind::Pink) game->pinkTunnelWrapped = true;
+            if (ghost->kind == GhostKind::Cyan) game->cyanTunnelWrapped = true;
         } else if (ghost->x < 16) {
             ghost->x += 416;
             if (ghost->kind == GhostKind::Red) game->redTunnelWrapped = true;
             if (ghost->kind == GhostKind::Pink) game->pinkTunnelWrapped = true;
+            if (ghost->kind == GhostKind::Cyan) game->cyanTunnelWrapped = true;
         }
     }
     ghost->animationFrame = static_cast<uint8_t>((ghost->animationFrame + 1u) % 2u);
     if (oldX != ghost->x || oldY != ghost->y) game->visualDirty = true;
 }
 
-static void update_moving_ghost(GameState* game, GhostState* ghost,
-                                int targetX, int targetY, bool pinkPolicy) {
+static void update_active_ghost(GameState* game, GhostState* ghost,
+                                int targetX, int targetY, bool signPriorityPolicy) {
     if (!game || !ghost || !ghost->active || ghost->speed <= 0) return;
     if (ghost->offset == 0) {
-        const Direction selected = pinkPolicy
+        const Direction selected = signPriorityPolicy
             ? choose_pink_direction_impl(*game, *ghost, targetX, targetY)
             : choose_red_direction_impl(*game, *ghost, targetX, targetY);
         if (selected != Direction::None) {
@@ -407,7 +418,7 @@ static void update_red_ghost(GameState* game) {
     GhostState& red = game->ghosts[0];
     red.targetX = game->pacman.x;
     red.targetY = game->pacman.y;
-    update_moving_ghost(game, &red, red.targetX, red.targetY, false);
+    update_active_ghost(game, &red, red.targetX, red.targetY, false);
 }
 
 static void update_pink_house_release(GameState* game) {
@@ -485,7 +496,70 @@ static void update_pink_ghost(GameState* game) {
         return;
     }
     pink.collisionActive = true;
-    update_moving_ghost(game, &pink, pink.targetX, pink.targetY, true);
+    update_active_ghost(game, &pink, pink.targetX, pink.targetY, true);
+}
+
+static void update_cyan_house_release(GameState* game) {
+    if (!game) return;
+    GhostState& cyan = game->ghosts[2];
+
+    if (cyan.releaseState == GhostReleaseState::CyanHouseBounce) {
+        if (cyan.offset == 0) {
+            // This is the literal Ghost(3) branch in basGhostAI.bas: the
+            // middle ghost reverses at y=224/y=240 and leaves after its
+            // second aligned visit to the top of the box.
+            if (cyan.x == 224 && cyan.y == 240 && cyan.direction == Direction::Down) {
+                cyan.direction = Direction::Up;
+            }
+            if (cyan.x == 224 && cyan.y == 224 && cyan.direction == Direction::Up) {
+                if (cyan.releaseStepsRemaining > 0) --cyan.releaseStepsRemaining;
+                if (cyan.releaseStepsRemaining == 0) {
+                    cyan.direction = Direction::Up;
+                    cyan.requestedDirection = Direction::Up;
+                    cyan.releaseState = GhostReleaseState::CyanExiting;
+                    game->cyanReleaseStarted = true;
+                    game->visualDirty = true;
+                } else {
+                    cyan.direction = Direction::Down;
+                }
+            }
+        }
+        move_ghost_one_step(game, &cyan);
+        return;
+    }
+
+    if (cyan.releaseState == GhostReleaseState::CyanExiting) {
+        move_ghost_one_step(game, &cyan);
+        // VB6 sets Offset=8 and InGame=True at y=184 before the first normal
+        // horizontal step. The shared fixed-step mover reaches that boundary
+        // with a different offset, so normalize exactly that one transition.
+        if (cyan.y < 184) {
+            cyan.y = 184;
+            cyan.offset = 8;
+            cyan.releaseState = GhostReleaseState::Normal;
+            cyan.collisionActive = true;
+            cyan.direction = Direction::Left;
+            cyan.requestedDirection = Direction::Left;
+            game->cyanReleaseCompleted = true;
+            game->visualDirty = true;
+        }
+    }
+}
+
+static void update_cyan_ghost(GameState* game) {
+    if (!game) return;
+    GhostState& cyan = game->ghosts[2];
+    if (!cyan.active) return;
+
+    const GhostTarget target = calculate_cyan_target(*game, game->pacman, game->ghosts[0]);
+    cyan.targetX = target.x;
+    cyan.targetY = target.y;
+    if (cyan.releaseState != GhostReleaseState::Normal) {
+        update_cyan_house_release(game);
+        return;
+    }
+    cyan.collisionActive = true;
+    update_active_ghost(game, &cyan, cyan.targetX, cyan.targetY, true);
 }
 
 static void enter_dying(GameState* game) {
@@ -550,6 +624,14 @@ Direction choose_pink_direction(const GameState& game, const GhostState& ghost,
     return choose_pink_direction_impl(game, ghost, targetX, targetY);
 }
 
+Direction choose_cyan_direction(const GameState& game, const GhostState& ghost,
+                                int targetX, int targetY) {
+    // Cyan uses the same historical sign-priority chooser as the generic
+    // Ghost(3) branch. Keeping this wrapper separate makes the Cyan rule
+    // independently testable without changing Pink's public helper.
+    return choose_pink_direction_impl(game, ghost, targetX, targetY);
+}
+
 bool pacman_collides_with_ghost(const PacManState& pacman, const GhostState& ghost) {
     if (!ghost.active || !ghost.collisionActive) return false;
     return absolute_value(pacman.x - ghost.x) < 16 && absolute_value(pacman.y - ghost.y) < 16;
@@ -571,6 +653,8 @@ const char* ghost_release_state_name(GhostReleaseState state) {
     case GhostReleaseState::PinkHouseBounce: return "house-bounce";
     case GhostReleaseState::PinkToCenter: return "to-center";
     case GhostReleaseState::PinkExiting: return "exiting";
+    case GhostReleaseState::CyanHouseBounce: return "cyan-house-bounce";
+    case GhostReleaseState::CyanExiting: return "cyan-exiting";
     }
     return "unknown";
 }
@@ -606,6 +690,45 @@ GhostTarget calculate_pink_target(const GameState& game, const PacManState& pacm
     return GhostTarget{targetX, targetY};
 }
 
+GhostTarget calculate_cyan_target(const GameState& game, const PacManState& pacman,
+                                  const GhostState& red) {
+    // basGhostAI.bas identifies Cyan as Ghost(3). It compares integer tile
+    // coordinates and, only when the separation is greater than three tiles,
+    // adds eight tiles in the Pac-Man direction to BOTH Px and Py. The source
+    // uses XD(Direction) for Py as well as Px. There is no Ghost(1)/Red term,
+    // vector, or second projection in the authoritative VB6 routine; the Red
+    // parameter is explicit for call-site/test isolation and is intentionally
+    // unused rather than inventing arcade Inky behavior.
+    (void)red;
+    const int64_t pacmanTileX = historical_tile_coordinate(pacman.x);
+    const int64_t pacmanTileY = historical_tile_coordinate(pacman.y);
+    const int64_t cyanTileX = historical_tile_coordinate(game.ghosts[2].x);
+    const int64_t cyanTileY = historical_tile_coordinate(game.ghosts[2].y);
+    const int64_t tileDeltaX = pacmanTileX - cyanTileX;
+    const int64_t tileDeltaY = pacmanTileY - cyanTileY;
+    const int64_t tileDistance = (tileDeltaX < 0 ? -tileDeltaX : tileDeltaX) +
+        (tileDeltaY < 0 ? -tileDeltaY : tileDeltaY);
+    const bool farEnough = tileDistance > 3;
+
+    int64_t targetX = pacman.x;
+    int64_t targetY = pacman.y;
+    if (farEnough) {
+        const int64_t projection = static_cast<int64_t>(direction_x(pacman.direction)) *
+            8ll * kPacManTileSize;
+        targetX += projection;
+        // Compatibility quirk: preserve XD(Direction) on the Y projection.
+        targetY += projection;
+    }
+
+    const int64_t minimumInt = -2147483648ll;
+    const int64_t maximumInt = 2147483647ll;
+    if (targetX < minimumInt) targetX = minimumInt;
+    if (targetX > maximumInt) targetX = maximumInt;
+    if (targetY < minimumInt) targetY = minimumInt;
+    if (targetY > maximumInt) targetY = maximumInt;
+    return GhostTarget{static_cast<int>(targetX), static_cast<int>(targetY)};
+}
+
 void game_initialize(GameState* game) {
     if (!game) return;
     reset_actor_positions(game);
@@ -634,8 +757,11 @@ void game_initialize(GameState* game) {
     game->tunnelWrapped = false;
     game->redTunnelWrapped = false;
     game->pinkTunnelWrapped = false;
+    game->cyanTunnelWrapped = false;
     game->pinkReleaseStarted = false;
     game->pinkReleaseCompleted = false;
+    game->cyanReleaseStarted = false;
+    game->cyanReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -669,6 +795,9 @@ void game_reset_level(GameState* game) {
     const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
+    const GhostTarget cyanTarget = calculate_cyan_target(*game, game->pacman, game->ghosts[0]);
+    game->ghosts[2].targetX = cyanTarget.x;
+    game->ghosts[2].targetY = cyanTarget.y;
     game->playState = PlayState::Playing;
     game->levelCompleteStepsRemaining = 0;
     game->deathStepsRemaining = 0;
@@ -706,8 +835,11 @@ bool game_restart_session(GameState* game) {
     game->tunnelWrapped = false;
     game->redTunnelWrapped = false;
     game->pinkTunnelWrapped = false;
+    game->cyanTunnelWrapped = false;
     game->pinkReleaseStarted = false;
     game->pinkReleaseCompleted = false;
+    game->cyanReleaseStarted = false;
+    game->cyanReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -768,8 +900,11 @@ void game_update(GameState* game) {
     game->tunnelWrapped = false;
     game->redTunnelWrapped = false;
     game->pinkTunnelWrapped = false;
+    game->cyanTunnelWrapped = false;
     game->pinkReleaseStarted = false;
     game->pinkReleaseCompleted = false;
+    game->cyanReleaseStarted = false;
+    game->cyanReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
@@ -858,11 +993,13 @@ void game_update(GameState* game) {
     if (pacman.mouth > 2 || pacman.mouth < 1) pacman.mouthDirection = -pacman.mouthDirection;
     if (pacman.mouth != oldMouth) game->visualDirty = true;
 
-    // Update ordering is explicit: Pac-Man, mouth animation, Red, Pink, then
-    // one collision sample. Cyan and Orange remain stationary. Pink targets
-    // the Pac-Man position produced by this step, not the previous frame.
+    // Update ordering is explicit: Pac-Man, mouth animation, Red, Pink, Cyan,
+    // then one collision sample. Cyan observes Red's post-move position at
+    // this point; the source-faithful Cyan target currently does not consume
+    // that position. Pink targets the Pac-Man position produced by this step.
     update_red_ghost(game);
     update_pink_ghost(game);
+    update_cyan_ghost(game);
     if (!game->suppressGhostCollisionsForValidation && pacman_hits_any_ghost(*game)) {
         enter_dying(game);
     }

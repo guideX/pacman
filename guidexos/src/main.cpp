@@ -21,6 +21,10 @@
 #define PACMAN_HOSTED_PINK_MOVEMENT_TEST 0
 #endif
 
+#ifndef PACMAN_HOSTED_CYAN_MOVEMENT_TEST
+#define PACMAN_HOSTED_CYAN_MOVEMENT_TEST 0
+#endif
+
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     for (uint64_t i = 0; i < bytes; ++i) output[i] = static_cast<uint8_t>(value);
@@ -75,18 +79,27 @@ static void append_frame_number(char* message, uint32_t* index, uint32_t capacit
     while (length > 0 && *index + 1u < capacity) message[(*index)++] = digits[--length];
 }
 
+static void append_frame_signed_number(char* message, uint32_t* index, uint32_t capacity,
+                                       int64_t value) {
+    if (value < 0) {
+        append_frame_text(message, index, capacity, "-");
+        value = -(value + 1) + 1;
+    }
+    append_frame_number(message, index, capacity, static_cast<uint64_t>(value));
+}
+
 static void append_validation_ghost(char* message, uint32_t* index, uint32_t capacity,
                                     const char* label, const GhostState& ghost) {
     append_frame_text(message, index, capacity, label);
-    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.x));
+    append_frame_signed_number(message, index, capacity, ghost.x);
     append_frame_text(message, index, capacity, ",");
-    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.y));
+    append_frame_signed_number(message, index, capacity, ghost.y);
     append_frame_text(message, index, capacity, " dir=");
     append_frame_text(message, index, capacity, game_direction_name(ghost.direction));
     append_frame_text(message, index, capacity, " target=");
-    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.targetX));
+    append_frame_signed_number(message, index, capacity, ghost.targetX);
     append_frame_text(message, index, capacity, ",");
-    append_frame_number(message, index, capacity, static_cast<uint64_t>(ghost.targetY));
+    append_frame_signed_number(message, index, capacity, ghost.targetY);
     append_frame_text(message, index, capacity, " release=");
     append_frame_text(message, index, capacity, ghost_release_state_name(ghost.releaseState));
     append_frame_text(message, index, capacity, " anim=");
@@ -326,6 +339,21 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     game.visualDirty = true;
     ctx->host->log(ctx, "PacMan hosted Pink movement validation enabled");
 #endif
+#if PACMAN_HOSTED_CYAN_MOVEMENT_TEST
+    // Validation-only stable Pac-Man position. Cyan's historical target is
+    // still calculated by the production update path; unrelated collisions
+    // are suppressed until the bounded moving-Cyan collision window below.
+    game.pacman.x = 64;
+    game.pacman.y = 232;
+    game.pacman.direction = Direction::Right;
+    game.pacman.facingDirection = Direction::Right;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game.suppressGhostCollisionsForValidation = true;
+    game.visualDirty = true;
+    ctx->host->log(ctx, "PacMan hosted Cyan movement validation enabled");
+#endif
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
@@ -476,6 +504,23 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 ctx->host->log(ctx, "PacMan hosted Pink movement collision window enabled");
             }
 #endif
+#if PACMAN_HOSTED_CYAN_MOVEMENT_TEST
+            if (game.playState == PlayState::Playing && game.suppressGhostCollisionsForValidation &&
+                game.ghosts[2].releaseState == GhostReleaseState::Normal &&
+                game.simulationSteps >= 300u) {
+                // Place Pac-Man on the moving Cyan body for one deterministic
+                // validation collision. Production has no placement hook.
+                game.pacman.x = game.ghosts[2].x;
+                game.pacman.y = game.ghosts[2].y;
+                game.pacman.direction = Direction::None;
+                game.pacman.facingDirection = Direction::None;
+                game.pacman.requestedDirection = Direction::None;
+                game.pacman.offset = 0;
+                game.pacman.speed = 0;
+                game.suppressGhostCollisionsForValidation = false;
+                ctx->host->log(ctx, "PacMan hosted Cyan movement collision window enabled");
+            }
+#endif
             game_update(&game);
             accumulatorMs -= kFixedStepMs;
             ++updates;
@@ -487,6 +532,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (game.becameBlocked) ctx->host->log(ctx, "PacMan direction blocked by maze wall");
             if (game.tunnelWrapped) ctx->host->log(ctx, "PacMan tunnel wrap");
             if (game.redTunnelWrapped) ctx->host->log(ctx, "PacMan Red ghost tunnel wrap");
+            if (game.cyanTunnelWrapped) ctx->host->log(ctx, "PacMan Cyan ghost tunnel wrap");
             log_game_events(ctx, game);
         }
         if (updates == kMaxCatchUpSteps && accumulatorMs >= kFixedStepMs) {

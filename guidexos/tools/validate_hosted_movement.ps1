@@ -101,6 +101,10 @@ function Wait-ForLogCount([string]$pattern, [int]$minimumCount, [int]$timeoutMs 
     return $false
 }
 
+function Get-LogCount([string]$pattern) {
+    return [regex]::Matches((Read-RawLog), $pattern).Count
+}
+
 function Wait-ForNoAdditionalLogCount([string]$pattern, [int]$baselineCount, [int]$timeoutMs = 500) {
     $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
     do {
@@ -215,13 +219,14 @@ try {
     }
     $results.Add('compositor=found')
 
+    $cycleOneCollisionBaseline = Get-LogCount 'PacMan ghost collision detected'
     Launch-ProductionPacMan
     Capture-Hosted 'four-ghosts'
     $discovery = Wait-ForLog 'Native ELF validated' 5000
     $ghosts = @('red', 'pink', 'cyan', 'orange') | ForEach-Object { Wait-ForLog $_ 3000 } | Where-Object { $_ }
     $results.Add("discovery-and-elf-validation=$discovery")
     $results.Add("four-ghost-initialization=$($ghosts.Count -eq 4)")
-    $noCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' 0 500
+    $noCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $cycleOneCollisionBaseline 500
     $results.Add("no-automatic-launch-collision=$noCollision")
 
     Send-Key 39 1300
@@ -235,9 +240,16 @@ try {
     $results.Add("movement-pills-score=$($pill -and $score -and $remaining)")
     Escape-And-Wait 1
 
+    $cycleTwoCollisionBaseline = Get-LogCount 'PacMan ghost collision detected'
     Launch-ProductionPacMan
-    $repeatNoCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' 0 500
+    $repeatNoCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $cycleTwoCollisionBaseline 500
     $results.Add("repeat-launch-no-collision=$repeatNoCollision")
+    $cycleBaselineSelfCheck = $cycleOneCollisionBaseline -ge 0 -and
+        $cycleTwoCollisionBaseline -ge $cycleOneCollisionBaseline -and
+        $noCollision -and $repeatNoCollision
+    $results.Add("cycle-one-collision-baseline=$cycleOneCollisionBaseline")
+    $results.Add("cycle-two-collision-baseline=$cycleTwoCollisionBaseline")
+    $results.Add("cycle-baseline-self-check=$cycleBaselineSelfCheck")
     Escape-And-Wait 2
 
     Send-ServerCommand 'nativeapp.processes'

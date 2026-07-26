@@ -206,9 +206,49 @@ sign-priority order. A target-directed horizontal choice overwrites a
 target-directed vertical choice, with Right over Left and Down over Up; the
 fallback order is Up, Down, Left, Right. The shared mover advances at one
 logical pixel per 10 ms step, wraps only on row 14, and selects the historical
-directional sprite row with the existing mask composition. Cyan and Orange
-remain stationary.
+directional sprite row with the existing mask composition. Cyan is covered by
+the separate Cyan movement milestone below; Orange remains stationary.
+
+## Cyan ghost movement milestone
+
+`basGhostAI.bas` identifies Cyan as Ghost(3). `DefaultPositions` places it at
+`(224,240)`, facing Down, inside the ghost house, with the normal historical
+speed of 1 logical pixel per 10 ms timer step. The source reverses Cyan between
+`y=240` and `y=224`, counts two aligned visits to the top of the box, then sends
+it up the fixed `x=224` doorway to `y=184`. The native port keeps that release
+path, makes collision active only at the outside-house boundary, and chooses a
+deterministic Left where the VB6 source uses `2 + Rnd` for its first horizontal
+normal direction.
+
+Cyan's target helper preserves the exact local VB6 Ghost(3) formula. Using
+integer `Xpos \ 16`/`Ypos \ 16` coordinates, it projects only when the
+Pac-Man/Cyan Manhattan tile separation is greater than three tiles. The
+projected point is `targetX = pacmanX + XD(direction)*128` and
+`targetY = pacmanY + XD(direction)*128`; the `XD`-for-`Y` expression is an
+observable source quirk, not a correction. The helper accepts Red explicitly,
+but the authoritative VB6 Ghost(3) code never reads Red or forms a Red-to-
+projection vector, so Cyan's target is intentionally unchanged when only Red
+moves. This differs from arcade Inky and is documented as a source inspection
+result. Targets are kept in logical coordinates without premature maze clamping.
+
+Cyan shares the validated aligned decision machinery: the historical
+sign-priority order is Up, Down, Left, Right, immediate reverse is excluded
+when another legal direction exists, reverse is allowed at a dead end, and
+choices are deterministic. It wraps only on the row-14 tunnel, advances and
+animates at the fixed 10 ms rate, renders from the cyan sprite column 64 with
+directional rows, collides with the existing strict center threshold, and
+resets to its house state after death, level completion, and Game Over restart.
+The shared update order is Pac-Man, Red, Pink, Cyan, collision, then timers and
+dirty state; Cyan sees Red's post-move position even though the source-faithful
+target helper does not use it. Orange's position, direction, release state, and
+target remain untouched by the generic moving-ghost loop.
+
+The bounded hosted harness is `tools/validate_hosted_cyan_movement.ps1`; build
+the validation package with `PACMAN_HOSTED_DANGER_TEST=ON` and
+`PACMAN_HOSTED_CYAN_MOVEMENT_TEST=ON`. It uses the same synchronized
+`gui.sync`/freeze capture path as the Red and Pink harnesses and is absent from
+the production ELF.
 
 ## Current limitations and next milestone
 
-The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red and Pink movement, two moving historical ghosts, two stationary historical ghosts, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is movement setup, next-tile pill consumption, level-complete check, Pac-Man movement, Red movement, Pink movement, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. Cyan movement, Orange movement, scatter/chase schedules, frightened mode, ghost eating, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is Cyan ghost movement using its exact historical target and Red interaction while Orange remains stationary.
+The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red, Pink, and Cyan movement, one stationary Orange ghost, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is movement setup, next-tile pill consumption, level-complete check, Pac-Man movement, Red movement, Pink movement, Cyan movement, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. Orange movement, scatter/chase schedules, frightened mode, ghost eating, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is Orange movement using its exact historical distance-sensitive behavior.

@@ -103,7 +103,7 @@ function Send-ServerCommand([string]$command) {
     $process.StandardInput.Flush()
 }
 
-$framePattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+) red=(-?\d+),(-?\d+) dir=(\w+) target=(-?\d+),(-?\d+) anim=(\d+)'
+$framePattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+) red=(-?\d+),(-?\d+) dir=(\w+) target=(-?\d+),(-?\d+) release=([\w-]+) anim=(\d+)'
 
 function Convert-Frame([System.Text.RegularExpressions.Match]$match) {
     return [pscustomobject]@{
@@ -121,7 +121,8 @@ function Convert-Frame([System.Text.RegularExpressions.Match]$match) {
         RedDirection = $match.Groups[17].Value
         TargetX = [int]$match.Groups[18].Value
         TargetY = [int]$match.Groups[19].Value
-        AnimationFrame = [byte]$match.Groups[20].Value
+        RedRelease = $match.Groups[20].Value
+        AnimationFrame = [byte]$match.Groups[21].Value
         Result = [uint32]$match.Groups[14].Value
     }
 }
@@ -204,11 +205,18 @@ function Sync-HostedFrame([pscustomobject]$frame, [string]$label) {
 }
 
 function Send-Escape-And-Wait {
-    [PacManRedMovementCapture1]::Key($compositor, 27, $true)
-    [PacManRedMovementCapture1]::Key($compositor, 27, $false)
-    if (-not (Wait-ForLog 'Cleanup complete app=com.guidexos.pacman.danger-validation.*remainingWindows=0' 30000)) {
-        throw 'Escape did not clean up the validation application window.'
+    for ($attempt = 1; $attempt -le 3; ++$attempt) {
+        # Prime the compositor focus path before Escape. Hosted focus can be
+        # retained by a frozen capture surface after a long capture sequence.
+        [PacManRedMovementCapture1]::Key($compositor, 39, $true)
+        Start-Sleep -Milliseconds 80
+        [PacManRedMovementCapture1]::Key($compositor, 39, $false)
+        Start-Sleep -Milliseconds 80
+        [PacManRedMovementCapture1]::Key($compositor, 27, $true)
+        [PacManRedMovementCapture1]::Key($compositor, 27, $false)
+        if (Wait-ForLog 'Cleanup complete app=com.guidexos.pacman.danger-validation.*remainingWindows=0' 3000) { return }
     }
+    throw 'Escape did not clean up the validation application window after three attempts.'
 }
 
 try {

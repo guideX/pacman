@@ -48,9 +48,10 @@ does not replace death, Ready, Game Over, or restart visuals.
 
 ## Current ghost scope
 
-Red is now the only moving ghost. The historical Red rule targets Pac-Man's
-current logical position directly; projected targets in the original VB6 code
-belong to later ghosts and are not copied into Red's helper. Red starts at
+Red, Pink, and Cyan are the moving ghosts in this milestone. The historical Red
+rule targets Pac-Man's current logical position directly; projected targets in
+the original VB6 code belong to later ghosts and are not copied into Red's
+helper. Red starts at
 `(224,184)`, uses deterministic Left in place of VB6's random initial
 horizontal choice, and moves at 1 logical pixel per 10 ms simulation step. Red
 starts outside the ghost house, so no house-exit timer or path is applicable;
@@ -72,11 +73,12 @@ frame per direction.
 
 The verified update order is input, aligned Pac-Man turn and wall handling,
 next-tile pill consumption and level-completion check, Pac-Man movement and
-tunnel wrap, mouth animation, Red movement, Pink movement, one collision
-sample, then the simulation step/state-timer advance and dirty-frame marking.
-If the final pill is consumed on an update, LevelComplete returns before either
-moving ghost or collision on that update. All four non-Playing states gate both
-moving ghosts, and one collision sample suppresses duplicate Red/Pink overlap
+tunnel wrap, mouth animation, Red movement, Pink movement, Cyan movement, one
+collision sample, then the simulation step/state-timer advance and dirty-frame
+marking.
+If the final pill is consumed on an update, LevelComplete returns before any
+moving ghost or collision on that update. All four non-Playing states gate all
+moving ghosts, and one collision sample suppresses duplicate multi-ghost overlap
 life loss.
 
 Pink starts at `(192,224)`, facing Up, in `PinkHouseBounce` with collision
@@ -97,11 +99,38 @@ tunnel-row target safely, and does not change Red's direct target. Pink's
 selection is the VB6 sign-priority sequence with Up, Down, Left, Right fallback,
 reverse exclusion when alternatives exist, and reverse allowed at a dead end.
 
-Cyan and Orange remain at `(224,240)` and `(256,224)`. The ordinary danger
-placement remains test-only and temporarily overlaps Red with Pac-Man for the
-existing three-life regression. The Red movement mode keeps Red moving, and the
-Pink movement mode pins Pac-Man still, suppresses unrelated collisions, and
-arms one deterministic moving-Pink collision after route captures.
+Cyan starts at `(224,240)`, facing Down, inside the house with collision
+inactive. The authoritative `basGhostAI.bas` Ghost(3) branch reverses at the
+top and bottom of the middle lane, counts two aligned visits to `(224,224)`,
+then exits upward through `x=224` to `y=184`. The native fixed-step port keeps
+that path, normalizes the historical `Offset=8` activation boundary, chooses a
+deterministic Left in place of the source's `2 + Rnd` horizontal activation,
+and enables collision only at the outside-house boundary. Cyan moves at one
+logical pixel per 10 ms, chooses only at aligned decision points, uses the
+same VB6 sign-priority order as Pink, excludes reverse directions when another
+legal path exists, reverses at dead ends, wraps only on row 14, and uses sprite
+column 64 with `Direction * 32` rows and the existing mask composition.
+
+The exact Cyan target helper is source-faithful: if
+`Abs(Pacman.Xpos \ 16 - Cyan.Xpos \ 16) + Abs(Pacman.Ypos \ 16 - Cyan.Ypos \ 16) > 3`,
+then `targetX = Pacman.Xpos + XD(Pacman.Direction) * 128` and
+`targetY = Pacman.Ypos + XD(Pacman.Direction) * 128`; otherwise the target is
+Pac-Man's current logical point. The `XD` use on Y is the same observable
+historical coordinate quirk preserved for Pink. The helper takes Red explicitly
+for deterministic call-site/test isolation, but the local VB6 source contains
+no Red position, vector, or doubled-vector term in Ghost(3), so Red movements
+must not change Cyan's target. This is an inspected source difference from
+arcade Inky behavior, not an implementation omission. Targets are not clamped
+to the maze before direction scoring. Cyan observes Red's post-move position in
+the update order, although the source-faithful helper does not use it.
+
+Cyan and Orange reset to `(224,240)` and `(256,224)` respectively after death,
+level completion, and Game Over restart. Orange remains stationary and its
+target/release state is never advanced. The ordinary danger placement remains
+test-only and temporarily overlaps Red with Pac-Man for the existing three-life
+regression. The Cyan movement mode pins Pac-Man still, suppresses unrelated
+collisions, and arms one deterministic moving-Cyan collision after route
+captures.
 
 The reusable Red harness is `tools/validate_hosted_red_movement.ps1`. It builds
 and launches only the validation package, uses one owned experimental server,
@@ -118,3 +147,12 @@ moving collision, and Ready house reset. It reports runtime/window identity,
 application frame sequence, frame/paint/capture generations, actor coordinates,
 directions, targets, release state, and screenshot paths. Its compile-time
 marker and forced collision behavior are absent from the production ELF.
+
+The reusable Cyan harness is `tools/validate_hosted_cyan_movement.ps1`. Build the
+same validation package with `PACMAN_HOSTED_DANGER_TEST=ON` and
+`PACMAN_HOSTED_CYAN_MOVEMENT_TEST=ON`; it captures the initial house position,
+house-exit transition, normal corridor, target-directed turn, distant route,
+moving collision, and Ready house reset with the same `gui.sync`/freeze
+generation checks. It also records Red movement and the source-faithful fact
+that Cyan's target is unchanged when only Red moves. Its compile-time marker
+and forced collision behavior are absent from the production ELF.
