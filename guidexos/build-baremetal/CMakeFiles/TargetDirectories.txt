@@ -1,0 +1,4 @@
+D:/dev/pacman/guidexos/build-baremetal/CMakeFiles/pacman-native.dir
+D:/dev/pacman/guidexos/build-baremetal/CMakeFiles/pacman-game-tests.dir
+D:/dev/pacman/guidexos/build-baremetal/CMakeFiles/edit_cache.dir
+D:/dev/pacman/guidexos/build-baremetal/CMakeFiles/rebuild_cache.dir

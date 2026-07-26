@@ -434,13 +434,27 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         ctx->host->log(ctx, "PacMan resource load failed");
         return GX_ERROR_FAILED;
     }
+    ctx->host->log(ctx, "PacMan resources loaded");
+    if (!level.pixels) {
+        ctx->host->log(ctx, "PacMan background invariant failed: level pixels null");
+    } else if (level.width != kPacManWidth) {
+        ctx->host->log(ctx, "PacMan background invariant failed: level width");
+    } else if (level.height < kPacManMazeHeight) {
+        ctx->host->log(ctx, "PacMan background invariant failed: level height");
+    } else if (level.strideBytes < level.width * 4u) {
+        ctx->host->log(ctx, "PacMan background invariant failed: level stride");
+    }
+    ctx->host->log(ctx, "PacMan background render begin");
     if (!build_background_frame(&level, g_backgroundPixels, kPacManWidth * kPacManFrameHeight)) {
         ctx->host->log(ctx, "PacMan background render failed");
         return GX_ERROR_FAILED;
     }
+    ctx->host->log(ctx, "PacMan background render complete");
 
+    ctx->host->log(ctx, "PacMan game initialization begin");
     GameState game;
     game_initialize(&game);
+    ctx->host->log(ctx, "PacMan game initialization complete");
 #if PACMAN_ENABLE_DIAGNOSTICS
     ctx->host->log(ctx, "PacMan ghosts initialized: Red, Pink, Cyan, and Orange moving");
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
@@ -523,6 +537,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
+    ctx->host->log(ctx, "PacMan window request begin");
     if (ctx->host->request_window_ex) {
         windowResult = ctx->host->request_window_ex(ctx, "Nexgen PacMan", 480, 640,
             GX_WINDOW_FLAG_FIXED_SIZE | GX_WINDOW_FLAG_CENTERED, &window);
@@ -533,10 +548,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         ctx->host->log(ctx, "PacMan window creation failed");
         return windowResult;
     }
+    ctx->host->log(ctx, "PacMan initial frame render begin");
     if (!render_and_present(ctx, window, sprites, game)) {
         ctx->host->log(ctx, "PacMan frame presentation failed");
         return GX_ERROR_FAILED;
     }
+    ctx->host->log(ctx, "PacMan initial frame render complete");
     game.visualDirty = false;
     ctx->host->log(ctx, "PacMan interactive frame presented");
 
