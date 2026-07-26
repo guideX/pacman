@@ -4,7 +4,7 @@
   "displayName": "Nexgen PacMan",
   "version": "0.1.0",
   "publisher": "Team Nexgen / guideXOS",
-  "description": "Interactive guideXOS Native ELF PacMan with deterministic Red, Pink, and Cyan ghost movement, stationary Orange, lives, collision, and level progress for the historical Nexgen PacMan game.",
+  "description": "Interactive guideXOS Native ELF PacMan with deterministic four-ghost movement, source-backed power-pill frightened behavior, lives, collision, and level progress for the historical Nexgen PacMan game.",
   "category": "Games",
   "kind": "NativeElf",
   "icon": "",

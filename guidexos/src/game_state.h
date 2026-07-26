@@ -47,8 +47,19 @@ enum class GhostKind : uint8_t {
     Orange = 3
 };
 
+// Nexgen does not have a shared Chase/Scatter mode.  This condition is the
+// per-ghost power-pill/eaten lifecycle only; normal target selection remains
+// independent for each ghost.
+enum class GhostCondition : uint8_t {
+    Normal,
+    Frightened,
+    Eaten,
+    Returning
+};
+
 enum class GhostReleaseState : uint8_t {
     Normal,
+    ReturningHouse,
     PinkHouseBounce,
     PinkToCenter,
     PinkExiting,
@@ -70,6 +81,9 @@ struct GhostState {
     int targetX;
     int targetY;
     uint8_t animationFrame;
+    GhostCondition condition;
+    uint32_t powerPillStepsRemaining;
+    bool frightenedDelayToggle;
     bool active;
     bool collisionActive;
     GhostReleaseState releaseState;
@@ -82,6 +96,9 @@ struct GameState {
     LevelState level;
     uint32_t score;
     uint32_t levelNumber;
+    uint32_t gameSpeed;
+    uint8_t ghostEatChain;
+    uint8_t frightenedFlashPhase;
     uint8_t lives;
     PlayState playState;
     uint32_t levelCompleteStepsRemaining;
@@ -121,5 +138,18 @@ struct GameState {
     bool gameOverEntered;
     bool sessionRestarted;
     bool suppressGhostCollisionsForValidation;
+    bool powerPillEncounterReset;
+    bool ghostReversalRequested[4];
+    bool ghostReversalApplied[4];
+    bool ghostEnteredFrightened[4];
+    bool ghostTimerInitialized[4];
+    bool frightenedFlashingBegan[4];
+    bool ghostTimerExpired[4];
+    bool ghostEaten[4];
+    bool ghostEnteredReturning[4];
+    bool ghostReturned[4];
+    bool ghostEatScoreAwarded[4];
+    uint32_t ghostEatScore[4];
+    bool ghostEatScoreChanged;
     uint64_t simulationSteps;
 };

@@ -169,14 +169,60 @@ static void draw_ghosts(const PacImage* sprites, uint32_t* frame, const GameStat
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
         const GhostState& ghost = game.ghosts[index];
         if (!ghost.active) continue;
-        const int sourceX = static_cast<int>(ghost.kind) * kPacManSpriteSize;
+        int sourceX = static_cast<int>(ghost.kind) * kPacManSpriteSize;
+        int maskX = 192;
+        if (ghost.condition == GhostCondition::Frightened &&
+            ghost.powerPillStepsRemaining > 0) {
+            const bool flashing = ghost.powerPillStepsRemaining < game_frightened_flash_threshold(game) &&
+                game.frightenedFlashPhase > 7u;
+            if (!flashing) sourceX = 128;
+        } else if (ghost.condition == GhostCondition::Eaten ||
+                   ghost.condition == GhostCondition::Returning) {
+            sourceX = 160;
+            maskX = 224;
+        }
         const int sourceY = safe_direction_index(ghost.direction) * kPacManSpriteSize;
         // Historical ShowSprites presents Pac-Man first and then ghosts. The
         // native scene keeps that ordering so a ghost owns an overlap pixel.
         draw_sprite(sprites, frame, ghost.x - 16, ghost.y - 16,
-                    sourceX, sourceY, 192);
+                    sourceX, sourceY, maskX);
     }
 }
+
+#if PACMAN_HOSTED_DANGER_TEST
+static char validation_condition_code(GhostCondition condition) {
+    switch (condition) {
+    case GhostCondition::Normal: return 'N';
+    case GhostCondition::Frightened: return 'F';
+    case GhostCondition::Eaten: return 'E';
+    case GhostCondition::Returning: return 'R';
+    }
+    return '?';
+}
+
+static void draw_validation_power_pill_indicator(uint32_t* frame, const GameState& game) {
+    // Validation-only and deliberately confined to the two-line status strip.
+    // It is absent from the production ELF and contains no gameplay controls.
+    draw_text(frame, 8, 544, "PP R:", 0x0000FFFFu, 1);
+    draw_number(frame, 38, 544, game.ghosts[0].powerPillStepsRemaining, 0x0000FFFFu, 1);
+    char code[2] = {validation_condition_code(game.ghosts[0].condition), '\0'};
+    draw_text(frame, 68, 544, code, 0x0000FFFFu, 1);
+    draw_text(frame, 80, 544, "P:", 0x0000FFFFu, 1);
+    draw_number(frame, 92, 544, game.ghosts[1].powerPillStepsRemaining, 0x0000FFFFu, 1);
+    code[0] = validation_condition_code(game.ghosts[1].condition);
+    draw_text(frame, 122, 544, code, 0x0000FFFFu, 1);
+    draw_text(frame, 134, 544, "C:", 0x0000FFFFu, 1);
+    draw_number(frame, 146, 544, game.ghosts[2].powerPillStepsRemaining, 0x0000FFFFu, 1);
+    code[0] = validation_condition_code(game.ghosts[2].condition);
+    draw_text(frame, 176, 544, code, 0x0000FFFFu, 1);
+    draw_text(frame, 188, 544, "O:", 0x0000FFFFu, 1);
+    draw_number(frame, 200, 544, game.ghosts[3].powerPillStepsRemaining, 0x0000FFFFu, 1);
+    code[0] = validation_condition_code(game.ghosts[3].condition);
+    draw_text(frame, 230, 544, code, 0x0000FFFFu, 1);
+    draw_text(frame, 242, 544, "CH:", 0x0000FFFFu, 1);
+    draw_number(frame, 266, 544, game.ghostEatChain, 0x0000FFFFu, 1);
+}
+#endif
 
 }
 
@@ -233,6 +279,7 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
     else if (game->playState == PlayState::GameOver) markerState[0] = 'G';
     draw_text(framePixels, 394, 10, markerState, 0x0000FFFFu, 1);
     draw_number(framePixels, 406, 10, static_cast<uint32_t>(validationFrameSequence), 0x0000FFFFu, 1);
+    draw_validation_power_pill_indicator(framePixels, *game);
 #else
     (void)validationFrameSequence;
 #endif

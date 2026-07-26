@@ -206,3 +206,40 @@ generations. The threshold proof records far distance/target and then a frame at
 exactly four tiles using the near target. The validation-only hook holds
 Pac-Man, changes it at Orange's next legal decision, arms one moving collision,
 and is absent from production `pacman.elf`.
+
+## Power-pill lifecycle contract
+
+The power-pill validation build adds `PACMAN_HOSTED_POWER_PILL_TEST=1` in
+addition to the danger hook. Its only purpose is to create a deterministic,
+observable sequence; it does not alter the production game loop. The hook
+holds Pac-Man on the historical lower-left power pill, keeps all four ghosts
+active and normal, suppresses accidental collisions during the movement
+warm-up, then places Pac-Man on each ghost in index order for the four source
+scores. Finally it arms a short Red frightened timer with collision suppression
+to prove exact expiration and normal restoration.
+
+The reusable harness is `tools/validate_hosted_power_pill.ps1`. It launches one
+owned experimental server, refuses to overlap an existing server/compositor,
+records the wrapper and child PIDs, captures these synchronized states, and
+always unfreezes/escapes/stops the owned process tree in `finally`:
+
+```text
+before-power-pill
+first-frightened
+frightened-movement
+flashing-near-expiration
+first-ghost-eaten
+second-ghost-eaten
+fourth-ghost-eaten
+frightened-expired-normal
+```
+
+Every capture is tied to the application frame sequence and matching
+compositor frame, paint, and capture generations. The frame diagnostics include
+each ghost's condition and remaining power-pill steps, Pac-Man score and
+score-chain index, and the four ghost coordinates. The log checks additionally
+require power-pill consumption, timer initialization, reversal, flashing,
+ghost-eaten, all four ghost-eating scores, and timer expiration. Captures and a
+run summary are written under `guidexos/captures/` and the server root with a
+unique run identifier; these are validation artifacts, not production package
+inputs.

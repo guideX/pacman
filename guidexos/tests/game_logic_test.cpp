@@ -1,5 +1,6 @@
 #include "game.h"
 #include "level.h"
+#include "renderer.h"
 
 #include <iostream>
 
@@ -126,6 +127,40 @@ void enable_normal_orange(GameState* game) {
     orange.releaseState = GhostReleaseState::Normal;
     orange.releaseStepsRemaining = 0;
     orange.speed = 1;
+}
+
+void enable_all_normal_ghosts_for_power(GameState* game) {
+    if (!game) return;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        GhostState& ghost = game->ghosts[index];
+        ghost.active = true;
+        ghost.collisionActive = true;
+        ghost.releaseState = GhostReleaseState::Normal;
+        ghost.condition = GhostCondition::Normal;
+        ghost.powerPillStepsRemaining = 0;
+        ghost.direction = Direction::Right;
+        ghost.requestedDirection = Direction::Right;
+        ghost.offset = 1;
+        ghost.speed = 0;
+        ghost.x = 120 + static_cast<int>(index) * 40;
+        ghost.y = 40;
+    }
+}
+
+void keep_only_power_target(GameState* game, int column, int row) {
+    if (!game) return;
+    for (int y = 0; y < kPacManMazeRows; ++y) {
+        for (int x = 0; x < kPacManMazeColumns; ++x) {
+            if (game->level.cells[y][x] == CellType::Pill ||
+                game->level.cells[y][x] == CellType::PowerPill) {
+                game->level.cells[y][x] = CellType::Empty;
+            }
+        }
+    }
+    game->level.cells[row][column] = CellType::PowerPill;
+    game->level.normalPillsRemaining = 0;
+    game->level.powerPillsRemaining = 1;
+    game->level.totalConsumablesRemaining = 1;
 }
 
 void place_stationary_collision(GameState* game, GhostKind kind);
@@ -1247,6 +1282,322 @@ bool test_power_pill_and_duplicate_prevention() {
     return ok;
 }
 
+bool test_power_pill_timers_and_reversal() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    const uint32_t duration = game_frightened_duration_steps(game);
+    const uint32_t threshold = game_frightened_flash_threshold(game);
+    set_before_target(&game, 1, 3, Direction::Up);
+    game.pacman.speed = 0;
+    game.ghosts[0].offset = 1;
+    game.ghosts[0].speed = 0;
+    const Direction redDirectionBefore = game.ghosts[0].direction;
+    game_update(&game);
+    ok &= expect(game.powerPillConsumed && game.score == kPacManPowerPillScore,
+                 "power pill keeps its historical base score");
+    ok &= expect(duration == 900 && threshold == 200,
+                 "level-one frightened duration and flash threshold use 10 ms steps");
+    ok &= expect(game.ghosts[0].condition == GhostCondition::Frightened &&
+                 game.ghosts[0].powerPillStepsRemaining == duration - 1u,
+                 "Red receives an individual timer and decrements after its AI pass");
+    ok &= expect(game.ghosts[0].direction == opposite_direction(redDirectionBefore) &&
+                 game.ghostReversalRequested[0] && game.ghostReversalApplied[0],
+                 "eligible Red reverses once on power-pill activation");
+    ok &= expect(game.ghosts[1].powerPillStepsRemaining == 0 &&
+                 game.ghosts[2].powerPillStepsRemaining == 0 &&
+                 game.ghosts[3].powerPillStepsRemaining == 0,
+                 "house-contained ghosts do not receive frightened timers");
+
+    enable_all_normal_ghosts_for_power(&game);
+    set_before_target(&game, 1, 23, Direction::Down);
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.score == kPacManPowerPillScore * 2u &&
+                 game.ghostEatChain == 0,
+                 "a second power pill resets the score chain");
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        ok &= expect(game.ghosts[index].condition == GhostCondition::Frightened &&
+                     game.ghosts[index].powerPillStepsRemaining == duration - 1u,
+                     "repeated power pill resets each eligible timer to full duration");
+    }
+
+    game.suppressGhostCollisionsForValidation = true;
+    GhostState& red = game.ghosts[0];
+    red.powerPillStepsRemaining = 3;
+    game_update(&game);
+    ok &= expect(red.powerPillStepsRemaining == 2 && red.condition == GhostCondition::Frightened,
+                 "frightened timer decrements once per fixed update");
+    game_update(&game);
+    ok &= expect(red.powerPillStepsRemaining == 1,
+                 "frightened timer reaches one without underflow");
+    game_update(&game);
+    ok &= expect(red.powerPillStepsRemaining == 0 && red.condition == GhostCondition::Normal,
+                 "frightened expiration restores normal condition exactly once");
+    game_update(&game);
+    ok &= expect(red.powerPillStepsRemaining == 0 && red.condition == GhostCondition::Normal,
+                 "expired frightened timer remains bounded at zero");
+    return ok;
+}
+
+bool test_frightened_speed_and_collision_order() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    enable_all_normal_ghosts_for_power(&game);
+    set_before_target(&game, 1, 3, Direction::Up);
+    game.pacman.speed = 0;
+    const int redX = game.pacman.x;
+    const int redY = game.pacman.y;
+    game.ghosts[0].x = redX;
+    game.ghosts[0].y = redY;
+    game.ghosts[1].x = redX;
+    game.ghosts[1].y = redY;
+    game.ghosts[2].x = redX;
+    game.ghosts[2].y = redY;
+    game.ghosts[3].x = redX;
+    game.ghosts[3].y = redY;
+    game_update(&game);
+    ok &= expect(game.ghostEatChain == 4 && game.score == 10u + 200u + 400u + 800u + 1600u,
+                 "four overlapping frightened ghosts use deterministic 200/400/800/1600 scoring");
+    ok &= expect(game.ghosts[0].condition == GhostCondition::Eaten &&
+                 !game.ghosts[0].collisionActive && game.ghostEaten[0],
+                 "eaten ghost becomes non-lethal exactly once");
+    const uint32_t scoreAfterEat = game.score;
+    game_update(&game);
+    ok &= expect(game.score == scoreAfterEat,
+                 "returning ghosts cannot be eaten or scored repeatedly");
+
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    GhostState& red = game.ghosts[0];
+    red.x = 208;
+    red.y = 184;
+    red.offset = 1;
+    red.speed = 0;
+    red.condition = GhostCondition::Frightened;
+    red.powerPillStepsRemaining = 10;
+    red.collisionActive = true;
+    game.pacman.x = red.x;
+    game.pacman.y = red.y;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing && game.score == 200u &&
+                 red.condition == GhostCondition::Eaten,
+                 "frightened collision eats rather than kills Pac-Man");
+
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    red = game.ghosts[0];
+    red.x = 180;
+    red.y = 200;
+    red.offset = 1;
+    red.speed = 0;
+    red.condition = GhostCondition::Normal;
+    red.collisionActive = true;
+    game.pacman.x = red.x;
+    game.pacman.y = red.y;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.lives == kPacManInitialLives - 1,
+                 "normal collision still kills Pac-Man");
+
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    red = game.ghosts[0];
+    red.x = 180;
+    red.y = 200;
+    red.offset = 1;
+    red.speed = 0;
+    red.condition = GhostCondition::Normal;
+    red.collisionActive = true;
+    GhostState& pink = game.ghosts[1];
+    enable_normal_pink(&game);
+    pink.x = red.x;
+    pink.y = red.y;
+    pink.offset = 1;
+    pink.speed = 0;
+    pink.condition = GhostCondition::Frightened;
+    pink.powerPillStepsRemaining = 10;
+    game.pacman.x = red.x;
+    game.pacman.y = red.y;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.score == 0,
+                 "lower-index normal ghost wins mixed overlap without later score");
+
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    red = game.ghosts[0];
+    red.x = 180;
+    red.y = 200;
+    red.offset = 1;
+    red.speed = 0;
+    red.condition = GhostCondition::Frightened;
+    red.powerPillStepsRemaining = 10;
+    red.collisionActive = true;
+    pink = game.ghosts[1];
+    enable_normal_pink(&game);
+    pink.x = red.x;
+    pink.y = red.y;
+    pink.offset = 1;
+    pink.speed = 0;
+    game.pacman.x = red.x;
+    game.pacman.y = red.y;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.score == 200u,
+                 "ghost-index order awards earlier frightened score before later death");
+    return ok;
+}
+
+bool test_eaten_return_and_lifecycle_reset() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    GhostState& red = game.ghosts[0];
+    red.x = 208;
+    red.y = 184;
+    red.offset = 1;
+    red.speed = 1;
+    red.condition = GhostCondition::Frightened;
+    red.powerPillStepsRemaining = 10;
+    red.collisionActive = true;
+    game.pacman.x = red.x;
+    game.pacman.y = red.y;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(red.condition == GhostCondition::Eaten && red.speed == 2 &&
+                 red.powerPillStepsRemaining == 0 && !red.collisionActive,
+                 "eaten ghost clears its timer, doubles speed, and loses lethality");
+    bool returned = false;
+    for (uint32_t step = 0; step < 2000u; ++step) {
+        game_update(&game);
+        if (red.condition == GhostCondition::Normal && red.releaseState == GhostReleaseState::Normal &&
+            red.collisionActive && game.ghostReturned[0]) {
+            returned = true;
+            break;
+        }
+    }
+    ok &= expect(returned, "eaten ghost follows the source gate bounce and returns to normal play");
+
+    game_initialize(&game);
+    game.ghosts[0].condition = GhostCondition::Frightened;
+    game.ghosts[0].powerPillStepsRemaining = 20;
+    game.ghostEatChain = 3;
+    game.ghosts[1].condition = GhostCondition::Returning;
+    game.ghosts[1].powerPillStepsRemaining = 0;
+    game.ghosts[1].releaseState = GhostReleaseState::ReturningHouse;
+    game.ghosts[1].collisionActive = false;
+    game.ghosts[1].speed = 2;
+    game.ghosts[0].x = game.pacman.x;
+    game.ghosts[0].y = game.pacman.y;
+    game.ghosts[0].condition = GhostCondition::Normal;
+    game.ghosts[0].collisionActive = true;
+    game.ghosts[0].speed = 0;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.ghosts[1].powerPillStepsRemaining == 0,
+                 "death clears active frightened and returning timers");
+
+    for (uint32_t step = 0; step < kPacManDeathDurationSteps + kPacManReadyAfterDeathSteps; ++step) {
+        game_update(&game);
+    }
+    ok &= expect(game.ghosts[0].condition == GhostCondition::Normal &&
+                 game.ghosts[0].powerPillStepsRemaining == 0,
+                 "death actor reset restores normal ghost conditions");
+    game.playState = PlayState::GameOver;
+    game.ghostEatChain = 4;
+    ok &= expect(game_restart_session(&game) && game.ghostEatChain == 0 &&
+                 game.ghosts[0].powerPillStepsRemaining == 0,
+                 "Game Over restart clears timers and score chain");
+    return ok;
+}
+
+bool test_final_power_pill_and_renderer() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    keep_only_power_target(&game, 2, 1);
+    set_before_target(&game, 2, 1, Direction::Right);
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.powerPillConsumed && game.playState == PlayState::LevelComplete &&
+                 game.score == kPacManPowerPillScore && game.level.totalConsumablesRemaining == 0,
+                 "final power pill preserves completion precedence and base score");
+    for (uint32_t step = 0; step < kPacManLevelCompleteDelaySteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing &&
+                 game.ghosts[0].condition == GhostCondition::Normal &&
+                 game.ghosts[0].powerPillStepsRemaining == 0,
+                 "level reset clears frightened state after final power pill");
+
+    static uint32_t spritePixels[256u * 352u];
+    static uint32_t backgroundPixels[kPacManWidth * kPacManFrameHeight];
+    static uint32_t framePixels[kPacManWidth * kPacManFrameHeight];
+    for (uint32_t i = 0; i < 256u * 352u; ++i) spritePixels[i] = 0;
+    for (uint32_t i = 0; i < kPacManWidth * kPacManFrameHeight; ++i) backgroundPixels[i] = 0;
+    for (int y = 0; y < kPacManSpriteSize; ++y) {
+        for (int x = 0; x < kPacManSpriteSize; ++x) {
+            spritePixels[y * 256 + 128 + x] = 0x00112233u;
+            spritePixels[y * 256 + 192 + x] = 0x00FFFFFFFFu;
+            spritePixels[y * 256 + 160 + x] = 0x00445566u;
+            spritePixels[y * 256 + 224 + x] = 0x00FFFFFFFFu;
+            spritePixels[y * 256 + x] = 0x00778899u;
+        }
+    }
+    game_initialize(&game);
+    game.pacman.facingDirection = Direction::None;
+    game.ghosts[0].x = 100;
+    game.ghosts[0].y = 100;
+    game.ghosts[0].condition = GhostCondition::Frightened;
+    game.ghosts[0].powerPillStepsRemaining = 100;
+    game.ghosts[0].collisionActive = true;
+    game.ghosts[0].direction = Direction::Up;
+    PacImage sprites{256u, 352u, 256u * 4u, spritePixels};
+    ok &= expect(render_game_scene(&sprites, &game, backgroundPixels, framePixels,
+                                   kPacManWidth * kPacManFrameHeight),
+                 "renderer accepts historical sprite dimensions");
+    const uint32_t centerPixel = framePixels[(32 + 100) * kPacManWidth + 100];
+    ok &= expect(centerPixel == 0x00112233u, "frightened ghosts use the historical blue sprite column");
+    game.frightenedFlashPhase = 8;
+    render_game_scene(&sprites, &game, backgroundPixels, framePixels,
+                      kPacManWidth * kPacManFrameHeight);
+    ok &= expect(framePixels[(32 + 100) * kPacManWidth + 100] == 0x00778899u,
+                 "frightened ghosts flash back to their normal body frame");
+    game.ghosts[0].condition = GhostCondition::Eaten;
+    game.ghosts[0].powerPillStepsRemaining = 0;
+    render_game_scene(&sprites, &game, backgroundPixels, framePixels,
+                      kPacManWidth * kPacManFrameHeight);
+    ok &= expect(framePixels[(32 + 100) * kPacManWidth + 100] == 0x00445566u,
+                 "eaten ghosts use the historical eyes sprite and mask");
+    return ok;
+}
+
 bool test_buffered_turn_and_tunnel_counts() {
     bool ok = true;
     GameState game{};
@@ -1956,6 +2307,10 @@ int main() {
     ok &= test_counts_and_layout();
     ok &= test_normal_pill_all_directions();
     ok &= test_power_pill_and_duplicate_prevention();
+    ok &= test_power_pill_timers_and_reversal();
+    ok &= test_frightened_speed_and_collision_order();
+    ok &= test_eaten_return_and_lifecycle_reset();
+    ok &= test_final_power_pill_and_renderer();
     ok &= test_buffered_turn_and_tunnel_counts();
     ok &= test_completion_reset_and_overflow();
     ok &= test_red_ghost_movement();

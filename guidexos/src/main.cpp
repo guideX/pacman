@@ -29,6 +29,10 @@
 #define PACMAN_HOSTED_ORANGE_MOVEMENT_TEST 0
 #endif
 
+#ifndef PACMAN_HOSTED_POWER_PILL_TEST
+#define PACMAN_HOSTED_POWER_PILL_TEST 0
+#endif
+
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     for (uint64_t i = 0; i < bytes; ++i) output[i] = static_cast<uint8_t>(value);
@@ -106,6 +110,10 @@ static void append_validation_ghost(char* message, uint32_t* index, uint32_t cap
     append_frame_signed_number(message, index, capacity, ghost.targetY);
     append_frame_text(message, index, capacity, " release=");
     append_frame_text(message, index, capacity, ghost_release_state_name(ghost.releaseState));
+    append_frame_text(message, index, capacity, " condition=");
+    append_frame_text(message, index, capacity, ghost_condition_name(ghost.condition));
+    append_frame_text(message, index, capacity, " pp=");
+    append_frame_number(message, index, capacity, ghost.powerPillStepsRemaining);
     append_frame_text(message, index, capacity, " anim=");
     append_frame_number(message, index, capacity, ghost.animationFrame);
 }
@@ -124,7 +132,7 @@ static const char* validation_state_name(PlayState state) {
 static void log_validation_frame(gx_app_context* ctx, gx_handle window, const GameState& game,
                                  uint64_t frameSequence, gx_result result) {
     if (!ctx || !ctx->host || !ctx->host->log) return;
-    char message[640];
+    char message[1024];
     uint32_t index = 0;
     append_frame_text(message, &index, sizeof(message), "PacMan frame seq=");
     append_frame_number(message, &index, sizeof(message), frameSequence);
@@ -136,6 +144,8 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_number(message, &index, sizeof(message), game.simulationSteps);
     append_frame_text(message, &index, sizeof(message), " score=");
     append_frame_number(message, &index, sizeof(message), game.score);
+    append_frame_text(message, &index, sizeof(message), " chain=");
+    append_frame_number(message, &index, sizeof(message), game.ghostEatChain);
     append_frame_text(message, &index, sizeof(message), " lives=");
     append_frame_number(message, &index, sizeof(message), game.lives);
     append_frame_text(message, &index, sizeof(message), " level=");
@@ -246,6 +256,10 @@ static void log_diagnostic_ghost_state(gx_app_context* ctx, const char* label,
     append_number(ghost.targetY);
     append_text(" release=");
     append_text(ghost_release_state_name(ghost.releaseState));
+    append_text(" condition=");
+    append_text(ghost_condition_name(ghost.condition));
+    append_text(" pp=");
+    append_number(ghost.powerPillStepsRemaining);
     append_text(" anim=");
     append_number(ghost.animationFrame);
     message[index] = '\0';
@@ -258,6 +272,7 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (!ctx || !ctx->host || !ctx->host->log) return;
     if (game.normalPillConsumed) ctx->host->log(ctx, "PacMan normal pill consumed");
     if (game.powerPillConsumed) ctx->host->log(ctx, "PacMan power pill consumed");
+    if (game.powerPillEncounterReset) ctx->host->log(ctx, "PacMan power-pill encounter reset");
     if (game.scoreChanged) log_game_value(ctx, "PacMan score updated: ", game.score);
     if (game.normalPillConsumed || game.powerPillConsumed) {
         log_game_value(ctx, "PacMan remaining consumables: ", game.level.totalConsumablesRemaining);
@@ -275,6 +290,24 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (game.gameOverEntered) ctx->host->log(ctx, "PacMan Game Over entered");
     static const char* labels[] = {"Red", "Pink", "Cyan", "Orange"};
     for (uint32_t ghostIndex = 0; ghostIndex < kPacManGhostCount; ++ghostIndex) {
+        if (game.ghostTimerInitialized[ghostIndex]) {
+            log_game_value(ctx, "PacMan frightened timer initialized: ",
+                           game_frightened_duration_steps(game));
+        }
+        if (game.ghostReversalRequested[ghostIndex]) ctx->host->log(ctx, "PacMan ghost reversal requested");
+        if (game.ghostReversalApplied[ghostIndex]) ctx->host->log(ctx, "PacMan ghost reversal applied");
+        if (game.ghostEnteredFrightened[ghostIndex]) ctx->host->log(ctx, "PacMan ghost entered frightened");
+        if (game.frightenedFlashingBegan[ghostIndex]) ctx->host->log(ctx, "PacMan frightened flashing began");
+        if (game.ghostTimerExpired[ghostIndex]) ctx->host->log(ctx, "PacMan ghost timer expired");
+        if (game.ghostEaten[ghostIndex]) ctx->host->log(ctx, "PacMan ghost eaten");
+        if (game.ghostEatScoreAwarded[ghostIndex]) {
+            log_game_value(ctx, "PacMan ghost-eating score awarded: ", game.ghostEatScore[ghostIndex]);
+            log_game_value(ctx, "PacMan score-chain index: ", game.ghostEatChain);
+        }
+        if (game.ghostEnteredReturning[ghostIndex]) {
+            ctx->host->log(ctx, "PacMan ghost entered returning/reset state");
+        }
+        if (game.ghostReturned[ghostIndex]) ctx->host->log(ctx, "PacMan ghost returned to normal play");
         log_diagnostic_ghost_state(ctx, labels[ghostIndex], game.ghosts[ghostIndex]);
     }
 #else
@@ -298,6 +331,92 @@ static bool apply_hosted_danger_test_placement(GameState* game, uint32_t* placem
     game->visualDirty = true;
     ++*placementCount;
     return true;
+}
+#endif
+
+#if PACMAN_HOSTED_POWER_PILL_TEST
+static void configure_hosted_power_pill_test(GameState* game) {
+    if (!game) return;
+    // Row 23, column 1 is the historical lower-left power pill. Pac-Man is
+    // held one tile above it so the first fixed update consumes it.
+    game->pacman.x = 24;
+    game->pacman.y = 360;
+    game->pacman.direction = Direction::Down;
+    game->pacman.facingDirection = Direction::Down;
+    game->pacman.requestedDirection = Direction::Down;
+    game->pacman.offset = 0;
+    game->pacman.speed = 0;
+    const int positions[4][2] = {{160, 232}, {192, 232}, {224, 232}, {256, 232}};
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        GhostState& ghost = game->ghosts[index];
+        ghost.x = positions[index][0];
+        ghost.y = positions[index][1];
+        ghost.offset = 1;
+        ghost.direction = Direction::Right;
+        ghost.requestedDirection = Direction::Right;
+        ghost.condition = GhostCondition::Normal;
+        ghost.releaseState = GhostReleaseState::Normal;
+        ghost.powerPillStepsRemaining = 0;
+        ghost.collisionActive = true;
+        ghost.speed = 1;
+        ghost.active = true;
+    }
+    game->suppressGhostCollisionsForValidation = true;
+    game->visualDirty = true;
+}
+
+static void apply_hosted_power_pill_test_step(GameState* game, bool* activated,
+                                               uint32_t* movementWarmupSteps,
+                                               bool* expirationArmed) {
+    if (!game || !activated || !movementWarmupSteps || !expirationArmed ||
+        game->playState != PlayState::Playing) return;
+    if (!*activated && game->ghosts[0].condition == GhostCondition::Frightened) {
+        *activated = true;
+    }
+    if (!*activated) return;
+
+    // Keep the first eight updates as a short movement warm-up, then let the
+    // source timer run naturally until it enters its flashing window. Holding
+    // collisions suppressed through that window makes the hosted proof
+    // independent of repaint timing while leaving production behavior untouched.
+    if (*movementWarmupSteps < 750u) {
+        for (uint32_t index = 0; index < kPacManGhostCount; ++index) game->ghosts[index].speed = 1;
+        game->pacman.x = 24;
+        game->pacman.y = 360;
+        game->pacman.direction = Direction::None;
+        game->pacman.facingDirection = Direction::None;
+        game->pacman.requestedDirection = Direction::None;
+        game->pacman.offset = 1;
+        game->pacman.speed = 0;
+        game->suppressGhostCollisionsForValidation = true;
+        ++*movementWarmupSteps;
+        return;
+    }
+
+    if (game->ghostEatChain < 4u) {
+        const GhostState& target = game->ghosts[game->ghostEatChain];
+        game->pacman.x = target.x;
+        game->pacman.y = target.y;
+        game->pacman.direction = Direction::None;
+        game->pacman.facingDirection = Direction::None;
+        game->pacman.requestedDirection = Direction::None;
+        game->pacman.offset = 1;
+        game->pacman.speed = 0;
+        game->suppressGhostCollisionsForValidation = false;
+        return;
+    }
+
+    if (!*expirationArmed) {
+        GhostState& ghost = game->ghosts[0];
+        ghost.condition = GhostCondition::Frightened;
+        ghost.powerPillStepsRemaining = 30;
+        ghost.frightenedDelayToggle = false;
+        ghost.collisionActive = false;
+        ghost.speed = 0;
+        game->frightenedFlashPhase = 0;
+        game->suppressGhostCollisionsForValidation = true;
+        *expirationArmed = true;
+    }
 }
 #endif
 
@@ -397,6 +516,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     game.visualDirty = true;
     ctx->host->log(ctx, "PacMan hosted Orange movement validation enabled");
 #endif
+#if PACMAN_HOSTED_POWER_PILL_TEST
+    configure_hosted_power_pill_test(&game);
+    ctx->host->log(ctx, "PacMan hosted power-pill validation enabled");
+#endif
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
@@ -428,6 +551,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 #if PACMAN_HOSTED_ORANGE_MOVEMENT_TEST
     bool orangeThresholdSwitched = false;
     uint64_t orangeThresholdSwitchStep = 0;
+#endif
+#if PACMAN_HOSTED_POWER_PILL_TEST
+    bool hostedPowerPillActivated = false;
+    uint32_t hostedPowerPillMovementWarmupSteps = 0;
+    bool hostedPowerPillExpirationArmed = false;
 #endif
 
     while (running) {
@@ -599,6 +727,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 game.suppressGhostCollisionsForValidation = false;
                 ctx->host->log(ctx, "PacMan hosted Orange movement collision window enabled");
             }
+#endif
+#if PACMAN_HOSTED_POWER_PILL_TEST
+            apply_hosted_power_pill_test_step(&game, &hostedPowerPillActivated,
+                                              &hostedPowerPillMovementWarmupSteps,
+                                              &hostedPowerPillExpirationArmed);
 #endif
             game_update(&game);
             accumulatorMs -= kFixedStepMs;

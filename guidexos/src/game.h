@@ -9,6 +9,7 @@ static const uint8_t kPacManInitialLives = 3u;
 static const uint32_t kPacManGhostCount = 4u;
 static const uint32_t kPacManNormalPillScore = 10u;
 static const uint32_t kPacManPowerPillScore = 10u;
+static const uint32_t kPacManGhostEatScore[4] = {200u, 400u, 800u, 1600u};
 
 struct GhostTarget {
     int x;
@@ -21,7 +22,10 @@ bool game_restart_session(GameState* game);
 void add_score(GameState& game, uint32_t points);
 bool pacman_collides_with_ghost(const PacManState& pacman, const GhostState& ghost);
 const char* ghost_kind_name(GhostKind kind);
+const char* ghost_condition_name(GhostCondition condition);
 const char* ghost_release_state_name(GhostReleaseState state);
+uint32_t game_frightened_duration_steps(const GameState& game);
+uint32_t game_frightened_flash_threshold(const GameState& game);
 Direction choose_ghost_direction(const GameState& game, const GhostState& ghost,
                                  int targetX, int targetY);
 Direction choose_pink_direction(const GameState& game, const GhostState& ghost,

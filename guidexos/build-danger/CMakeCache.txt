@@ -244,9 +244,16 @@ PACMAN_HOSTED_CYAN_MOVEMENT_TEST:BOOL=OFF
 //Enable test-only automatic Red overlap for hosted danger validation
 PACMAN_HOSTED_DANGER_TEST:BOOL=ON
 
+//Enable isolated hosted Orange movement validation without forced
+// collisions
+PACMAN_HOSTED_ORANGE_MOVEMENT_TEST:BOOL=OFF
+
 //Enable isolated hosted Pink movement validation without forced
 // collisions
 PACMAN_HOSTED_PINK_MOVEMENT_TEST:BOOL=OFF
+
+//Enable isolated hosted power-pill lifecycle validation
+PACMAN_HOSTED_POWER_PILL_TEST:BOOL=OFF
 
 //Enable isolated hosted Red movement validation without forced
 // collisions

@@ -31,6 +31,40 @@ static const uint32_t kPinkHouseBounceSteps = 2u;
 static const int kOrangeTargetThresholdTiles = 4;
 static const int kOrangeProjectionTiles = 12;
 
+static uint32_t effective_game_speed(const GameState& game) {
+    return game.gameSpeed == 0 ? 1u : game.gameSpeed;
+}
+
+static uint32_t frightened_duration_steps(const GameState& game) {
+    const uint32_t level = game.levelNumber > 8u ? 8u : game.levelNumber;
+    const uint32_t base = level >= 10u ? 0u : 1000u - level * 100u;
+    const uint32_t speed = effective_game_speed(game);
+    return base / speed;
+}
+
+static uint32_t frightened_flash_threshold(const GameState& game) {
+    return 200u / effective_game_speed(game);
+}
+
+static void clear_power_event_flags(GameState* game) {
+    if (!game) return;
+    game->powerPillEncounterReset = false;
+    game->ghostEatScoreChanged = false;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game->ghostReversalRequested[index] = false;
+        game->ghostReversalApplied[index] = false;
+        game->ghostEnteredFrightened[index] = false;
+        game->ghostTimerInitialized[index] = false;
+        game->frightenedFlashingBegan[index] = false;
+        game->ghostTimerExpired[index] = false;
+        game->ghostEaten[index] = false;
+        game->ghostEnteredReturning[index] = false;
+        game->ghostReturned[index] = false;
+        game->ghostEatScoreAwarded[index] = false;
+        game->ghostEatScore[index] = 0;
+    }
+}
+
 static int clamp_int(int value, int minimum, int maximum) {
     if (value < minimum) return minimum;
     if (value > maximum) return maximum;
@@ -76,6 +110,17 @@ static bool is_reverse_direction(Direction direction, Direction current) {
         (direction == Direction::Down && current == Direction::Up);
 }
 
+static Direction opposite_direction(Direction direction) {
+    switch (direction) {
+    case Direction::Up: return Direction::Down;
+    case Direction::Down: return Direction::Up;
+    case Direction::Left: return Direction::Right;
+    case Direction::Right: return Direction::Left;
+    case Direction::None: return Direction::None;
+    }
+    return Direction::None;
+}
+
 static void reset_pacman(PacManState* pacman) {
     if (!pacman) return;
     pacman->x = 224;
@@ -105,6 +150,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[0].targetX = 224;
     ghosts[0].targetY = 376;
     ghosts[0].animationFrame = 0;
+    ghosts[0].condition = GhostCondition::Normal;
+    ghosts[0].powerPillStepsRemaining = 0;
+    ghosts[0].frightenedDelayToggle = false;
     ghosts[0].active = true;
     ghosts[0].collisionActive = true;
     ghosts[0].releaseState = GhostReleaseState::Normal;
@@ -120,6 +168,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[1].targetX = 0;
     ghosts[1].targetY = 0;
     ghosts[1].animationFrame = 0;
+    ghosts[1].condition = GhostCondition::Normal;
+    ghosts[1].powerPillStepsRemaining = 0;
+    ghosts[1].frightenedDelayToggle = false;
     ghosts[1].active = true;
     ghosts[1].collisionActive = false;
     ghosts[1].releaseState = GhostReleaseState::PinkHouseBounce;
@@ -135,6 +186,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[2].targetX = 0;
     ghosts[2].targetY = 0;
     ghosts[2].animationFrame = 0;
+    ghosts[2].condition = GhostCondition::Normal;
+    ghosts[2].powerPillStepsRemaining = 0;
+    ghosts[2].frightenedDelayToggle = false;
     ghosts[2].active = true;
     ghosts[2].collisionActive = false;
     ghosts[2].releaseState = GhostReleaseState::CyanHouseBounce;
@@ -150,6 +204,9 @@ static void reset_ghosts(GhostState* ghosts) {
     ghosts[3].targetX = 0;
     ghosts[3].targetY = 0;
     ghosts[3].animationFrame = 0;
+    ghosts[3].condition = GhostCondition::Normal;
+    ghosts[3].powerPillStepsRemaining = 0;
+    ghosts[3].frightenedDelayToggle = false;
     ghosts[3].active = true;
     ghosts[3].collisionActive = false;
     ghosts[3].releaseState = GhostReleaseState::OrangeHouseBounce;
@@ -160,6 +217,9 @@ static void reset_actor_positions(GameState* game) {
     if (!game) return;
     reset_pacman(&game->pacman);
     reset_ghosts(game->ghosts);
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game->ghosts[index].speed = static_cast<int>(effective_game_speed(*game));
+    }
     const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
@@ -173,6 +233,93 @@ static void reset_actor_positions(GameState* game) {
     game->ghosts[0].targetY = game->pacman.y;
     clear_held(&game->held);
     game->deathAnimationFrame = 0;
+}
+
+static bool ghost_can_receive_power_pill(const GhostState& ghost) {
+    return ghost.active && ghost.releaseState == GhostReleaseState::Normal &&
+        (ghost.condition == GhostCondition::Normal || ghost.condition == GhostCondition::Frightened);
+}
+
+static void align_for_ghost_speed(GhostState* ghost) {
+    if (!ghost || ghost->speed <= 1) return;
+    uint32_t speed = static_cast<uint32_t>(ghost->speed);
+    uint32_t mask = 0;
+    while (speed > 1u) {
+        mask = (mask << 1u) | 1u;
+        speed >>= 1u;
+    }
+    ghost->offset &= ~static_cast<int>(mask);
+    ghost->x &= ~static_cast<int>(mask);
+    ghost->y &= ~static_cast<int>(mask);
+    // The VB6 bit-mask alignment guarantees divisibility for its doubled
+    // speed. Native direction decisions additionally require the fixed-step
+    // offset and logical tile center to agree, so normalize to the center of
+    // the current safe cell before resuming eyes movement.
+    const int column = level_column_from_position(ghost->x);
+    const int row = level_row_from_position(ghost->y);
+    if (column >= 0 && column < kPacManMazeColumns && row >= 0 && row < kPacManMazeRows) {
+        ghost->x = (column + 1) * kPacManTileSize;
+        ghost->y = (row + 1) * kPacManTileSize;
+        ghost->offset = 0;
+    }
+}
+
+static void activate_power_pill(GameState* game) {
+    if (!game) return;
+    game->ghostEatChain = 0;
+    game->powerPillEncounterReset = true;
+    const uint32_t duration = frightened_duration_steps(*game);
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        GhostState& ghost = game->ghosts[index];
+        if (!ghost_can_receive_power_pill(ghost)) continue;
+        if (ghost.condition != GhostCondition::Frightened) {
+            game->ghostEnteredFrightened[index] = true;
+        }
+        ghost.condition = GhostCondition::Frightened;
+        ghost.powerPillStepsRemaining = duration;
+        game->ghostTimerInitialized[index] = true;
+        // The VB6 routine reverses immediately, before the next movement
+        // sample, and does this once for each eligible ghost on each pill.
+        game->ghostReversalRequested[index] = true;
+        ghost.direction = opposite_direction(ghost.direction);
+        ghost.requestedDirection = ghost.direction;
+        game->ghostReversalApplied[index] = true;
+        game->visualDirty = true;
+    }
+}
+
+static void restore_ghost_normal_speed(const GameState& game, GhostState* ghost) {
+    if (!ghost) return;
+    ghost->speed = static_cast<int>(effective_game_speed(game));
+}
+
+static void enter_returning_house(GameState* game, GhostState* ghost) {
+    if (!game || !ghost) return;
+    ghost->condition = GhostCondition::Returning;
+    ghost->releaseState = GhostReleaseState::ReturningHouse;
+    ghost->collisionActive = false;
+    restore_ghost_normal_speed(*game, ghost);
+    ghost->direction = Direction::Down;
+    ghost->requestedDirection = Direction::Down;
+    game->ghostEnteredReturning[static_cast<uint32_t>(ghost->kind)] = true;
+    game->visualDirty = true;
+}
+
+static void advance_power_pill_timer(GameState* game, GhostState* ghost) {
+    if (!game || !ghost || ghost->condition != GhostCondition::Frightened ||
+        ghost->powerPillStepsRemaining == 0) return;
+
+    const uint32_t threshold = frightened_flash_threshold(*game);
+    const uint32_t before = ghost->powerPillStepsRemaining;
+    --ghost->powerPillStepsRemaining;
+    if (before >= threshold && ghost->powerPillStepsRemaining < threshold) {
+        game->frightenedFlashingBegan[static_cast<uint32_t>(ghost->kind)] = true;
+    }
+    if (ghost->powerPillStepsRemaining == 0) {
+        ghost->condition = GhostCondition::Normal;
+        game->ghostTimerExpired[static_cast<uint32_t>(ghost->kind)] = true;
+        game->visualDirty = true;
+    }
 }
 
 static int wrap_tunnel_column(int column) {
@@ -209,6 +356,7 @@ static void consume_target_pill(GameState* game) {
     } else {
         game->powerPillConsumed = true;
         add_score(*game, kPacManPowerPillScore);
+        activate_power_pill(game);
     }
 
     if (game->level.totalConsumablesRemaining == 0) {
@@ -219,11 +367,44 @@ static void consume_target_pill(GameState* game) {
     }
 }
 
-static bool pacman_hits_any_ghost(const GameState& game) {
+static void enter_dying(GameState* game);
+
+static void eat_frightened_ghost(GameState* game, GhostState* ghost) {
+    if (!game || !ghost || ghost->condition != GhostCondition::Frightened ||
+        ghost->powerPillStepsRemaining == 0) return;
+    const uint32_t index = static_cast<uint32_t>(ghost->kind);
+    ghost->condition = GhostCondition::Eaten;
+    ghost->powerPillStepsRemaining = 0;
+    ghost->collisionActive = false;
+    ghost->speed *= 2;
+    align_for_ghost_speed(ghost);
+    const uint32_t nextChain = game->ghostEatChain < 4u ? game->ghostEatChain + 1u : 4u;
+    game->ghostEatChain = static_cast<uint8_t>(nextChain);
+    const uint32_t score = kPacManGhostEatScore[nextChain - 1u];
+    add_score(*game, score);
+    game->ghostEaten[index] = true;
+    game->ghostEatScoreAwarded[index] = true;
+    game->ghostEatScore[index] = score;
+    game->ghostEatScoreChanged = true;
+    game->visualDirty = true;
+}
+
+static void resolve_ghost_collisions(GameState* game) {
+    if (!game) return;
+    // Historical TestCollisions scans Ghost(1) through Ghost(4). Preserve
+    // that deterministic ordering and stop after the first lethal normal
+    // ghost so no later ghost can score after Pac-Man has died.
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
-        if (pacman_collides_with_ghost(game.pacman, game.ghosts[index])) return true;
+        GhostState& ghost = game->ghosts[index];
+        if (!pacman_collides_with_ghost(game->pacman, ghost)) continue;
+        if (ghost.condition == GhostCondition::Frightened &&
+            ghost.powerPillStepsRemaining > 0) {
+            eat_frightened_ghost(game, &ghost);
+        } else if (ghost.condition == GhostCondition::Normal) {
+            enter_dying(game);
+            break;
+        }
     }
-    return false;
 }
 
 static int wrap_tunnel_position(int position) {
@@ -353,6 +534,93 @@ static Direction choose_pink_direction_impl(const GameState& game, const GhostSt
     return Direction::None;
 }
 
+static Direction choose_frightened_direction(const GameState& game, const GhostState& ghost,
+                                             int targetX, int targetY) {
+    // The historical routine negates the target signs at a junction. The
+    // native chooser is expressed as a mirrored target, while retaining the
+    // same legal-direction and reverse rules as the normal helper.
+    const int64_t mirroredX = static_cast<int64_t>(ghost.x) * 2ll - targetX;
+    const int64_t mirroredY = static_cast<int64_t>(ghost.y) * 2ll - targetY;
+    const int minimumInt = -0x7FFFFFFF - 1;
+    const int maximumInt = 0x7FFFFFFF;
+    const int safeX = mirroredX < minimumInt ? minimumInt : mirroredX > maximumInt ? maximumInt : static_cast<int>(mirroredX);
+    const int safeY = mirroredY < minimumInt ? minimumInt : mirroredY > maximumInt ? maximumInt : static_cast<int>(mirroredY);
+    return choose_pink_direction_impl(game, ghost, safeX, safeY);
+}
+
+static Direction choose_returning_path_direction(const GameState& game, const GhostState& ghost) {
+    const int startColumn = level_column_from_position(ghost.x);
+    const int startRow = level_row_from_position(ghost.y);
+    const int targetColumn = level_column_from_position(224);
+    const int targetRow = level_row_from_position(184);
+    if (startColumn < 0 || startColumn >= kPacManMazeColumns || startRow < 0 ||
+        startRow >= kPacManMazeRows) return Direction::None;
+    int distances[kPacManMazeRows][kPacManMazeColumns];
+    int queueColumns[kPacManMazeRows * kPacManMazeColumns];
+    int queueRows[kPacManMazeRows * kPacManMazeColumns];
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        for (int column = 0; column < kPacManMazeColumns; ++column) distances[row][column] = -1;
+    }
+    int head = 0;
+    int tail = 0;
+    distances[startRow][startColumn] = 0;
+    queueColumns[tail] = startColumn;
+    queueRows[tail++] = startRow;
+    const Direction directions[] = {Direction::Up, Direction::Down, Direction::Left, Direction::Right};
+    while (head < tail) {
+        const int column = queueColumns[head];
+        const int row = queueRows[head++];
+        for (uint32_t index = 0; index < 4u; ++index) {
+            int nextColumn = column;
+            int nextRow = row;
+            switch (directions[index]) {
+            case Direction::Up: --nextRow; break;
+            case Direction::Down: ++nextRow; break;
+            case Direction::Left: --nextColumn; break;
+            case Direction::Right: ++nextColumn; break;
+            case Direction::None: break;
+            }
+            if (nextRow == kPacManTunnelRow && (nextColumn < 0 || nextColumn >= kPacManMazeColumns)) {
+                nextColumn = nextColumn < 0 ? kPacManMazeColumns - 1 : 0;
+            }
+            if (nextColumn < 0 || nextColumn >= kPacManMazeColumns || nextRow < 0 ||
+                nextRow >= kPacManMazeRows || distances[nextRow][nextColumn] >= 0 ||
+                !is_walkable_cell(level_cell(game.level, nextColumn, nextRow))) continue;
+            distances[nextRow][nextColumn] = distances[row][column] + 1;
+            queueColumns[tail] = nextColumn;
+            queueRows[tail++] = nextRow;
+        }
+    }
+    if (targetColumn < 0 || targetColumn >= kPacManMazeColumns || targetRow < 0 ||
+        targetRow >= kPacManMazeRows || distances[targetRow][targetColumn] < 0) return Direction::None;
+
+    Direction best = Direction::None;
+    int bestDistance = 0x7FFFFFFF;
+    for (uint32_t index = 0; index < 4u; ++index) {
+        if (!can_move(game, ghost.x, ghost.y, directions[index])) continue;
+        int nextColumn = startColumn;
+        int nextRow = startRow;
+        switch (directions[index]) {
+        case Direction::Up: --nextRow; break;
+        case Direction::Down: ++nextRow; break;
+        case Direction::Left: --nextColumn; break;
+        case Direction::Right: ++nextColumn; break;
+        case Direction::None: break;
+        }
+        if (nextRow == kPacManTunnelRow && (nextColumn < 0 || nextColumn >= kPacManMazeColumns)) {
+            nextColumn = nextColumn < 0 ? kPacManMazeColumns - 1 : 0;
+        }
+        if (nextColumn < 0 || nextColumn >= kPacManMazeColumns || nextRow < 0 ||
+            nextRow >= kPacManMazeRows || distances[nextRow][nextColumn] < 0) continue;
+        if (nextColumn == targetColumn && nextRow == targetRow) return directions[index];
+        if (distances[nextRow][nextColumn] < bestDistance) {
+            bestDistance = distances[nextRow][nextColumn];
+            best = directions[index];
+        }
+    }
+    return best;
+}
+
 static void move_ghost_one_step(GameState* game, GhostState* ghost) {
     if (!game || !ghost || ghost->direction == Direction::None || ghost->speed <= 0) return;
     // The historical level data represents the house door as part of the
@@ -364,12 +632,19 @@ static void move_ghost_one_step(GameState* game, GhostState* ghost) {
         (ghost->kind == GhostKind::Cyan &&
         ghost->releaseState == GhostReleaseState::CyanExiting) ||
         (ghost->kind == GhostKind::Orange &&
-        ghost->releaseState == GhostReleaseState::OrangeExiting);
+        ghost->releaseState == GhostReleaseState::OrangeExiting) ||
+        ghost->releaseState == GhostReleaseState::ReturningHouse;
     const bool houseDoorLane = houseDoor &&
         ghost->x == 224 && ghost->direction == Direction::Up &&
         ghost->y >= 184 && ghost->y <= 224;
+    const bool returningDoorLane = ghost->condition == GhostCondition::Returning &&
+        ghost->x == 224 && ghost->direction == Direction::Up &&
+        ghost->y >= 184 && ghost->y <= 224;
+    const bool returningDownDoorLane = ghost->releaseState == GhostReleaseState::ReturningHouse &&
+        ghost->x == 224 && ghost->direction == Direction::Down &&
+        ghost->y >= 184 && ghost->y <= 224;
     if (ghost->offset == 0 && !can_move(*game, ghost->x, ghost->y, ghost->direction) &&
-        !houseDoorLane) {
+        !houseDoorLane && !returningDoorLane && !returningDownDoorLane) {
         ghost->direction = Direction::None;
         ghost->requestedDirection = Direction::None;
         return;
@@ -403,9 +678,11 @@ static void update_active_ghost(GameState* game, GhostState* ghost,
                                 int targetX, int targetY, bool signPriorityPolicy) {
     if (!game || !ghost || !ghost->active || ghost->speed <= 0) return;
     if (ghost->offset == 0) {
-        const Direction selected = signPriorityPolicy
-            ? choose_pink_direction_impl(*game, *ghost, targetX, targetY)
-            : choose_red_direction_impl(*game, *ghost, targetX, targetY);
+        const Direction selected = ghost->condition == GhostCondition::Frightened
+            ? choose_frightened_direction(*game, *ghost, targetX, targetY)
+            : signPriorityPolicy
+                ? choose_pink_direction_impl(*game, *ghost, targetX, targetY)
+                : choose_red_direction_impl(*game, *ghost, targetX, targetY);
         if (selected != Direction::None) {
             ghost->requestedDirection = selected;
             if (ghost->direction != selected) {
@@ -417,14 +694,127 @@ static void update_active_ghost(GameState* game, GhostState* ghost,
         }
     }
 
+    if (ghost->condition == GhostCondition::Frightened) {
+        // basGhostAI.bas toggles DelayTime and suppresses every second
+        // movement update while PPTimer is positive. The first frightened
+        // update moves because the zero-initialized delay becomes one.
+        ghost->frightenedDelayToggle = !ghost->frightenedDelayToggle;
+        if (!ghost->frightenedDelayToggle) return;
+    }
+
     // Direction is selected only at an aligned tile center. The committed
     // direction then carries the ghost through the next 15 logical pixels.
     move_ghost_one_step(game, ghost);
 }
 
+static void update_returning_ghost(GameState* game, GhostState* ghost) {
+    if (!game || !ghost || !ghost->active) return;
+    const uint32_t index = static_cast<uint32_t>(ghost->kind);
+
+    if (ghost->condition == GhostCondition::Eaten) {
+        ghost->condition = GhostCondition::Returning;
+        game->ghostEnteredReturning[index] = true;
+        game->visualDirty = true;
+    }
+
+    if (ghost->releaseState == GhostReleaseState::ReturningHouse) {
+        // The source's gate-to-box renewal segment is a fixed vertical lane.
+        // Keep it explicit instead of asking normal maze targeting to sample
+        // the non-maze door cell.
+        restore_ghost_normal_speed(*game, ghost);
+        ghost->x = 224;
+        if (ghost->direction == Direction::Down) {
+            ghost->y += ghost->speed;
+            ghost->offset = (ghost->offset + ghost->speed) % kPacManTileSize;
+            if (ghost->y >= 224) {
+                ghost->y = 224;
+                ghost->offset = 0;
+                ghost->condition = GhostCondition::Normal;
+                ghost->collisionActive = false;
+                ghost->direction = Direction::Up;
+                ghost->requestedDirection = Direction::Up;
+                game->visualDirty = true;
+            }
+        } else {
+            ghost->direction = Direction::Up;
+            ghost->requestedDirection = Direction::Up;
+            ghost->y -= ghost->speed;
+            ghost->offset = (ghost->offset + kPacManTileSize - ghost->speed) % kPacManTileSize;
+            if (ghost->y <= 184) {
+                ghost->y = 184;
+                ghost->offset = 8;
+                ghost->releaseState = GhostReleaseState::Normal;
+                ghost->condition = GhostCondition::Normal;
+                ghost->collisionActive = true;
+                ghost->direction = Direction::Left;
+                ghost->requestedDirection = Direction::Left;
+                game->ghostReturned[index] = true;
+                game->visualDirty = true;
+            }
+        }
+        return;
+    }
+
+    ghost->targetX = 224;
+    ghost->targetY = 184;
+    ghost->collisionActive = false;
+    if (ghost->x == 224 && ghost->y == 192 && ghost->offset == 0) {
+        // Native tile centers place the gate one half-tile above the row-11
+        // center. Cross the final eight logical pixels through the fixed
+        // house door lane before entering the renewal bounce.
+        ghost->direction = Direction::Up;
+        ghost->requestedDirection = Direction::Up;
+        move_ghost_one_step(game, ghost);
+        if (ghost->y <= 184) {
+            ghost->y = 184;
+            ghost->offset = 8;
+            enter_returning_house(game, ghost);
+        }
+        return;
+    }
+    if (ghost->x == ghost->targetX && ghost->y == ghost->targetY && ghost->offset == 0) {
+        enter_returning_house(game, ghost);
+        return;
+    }
+    if (ghost->offset == 0) {
+        const int column = level_column_from_position(ghost->x);
+        const int row = level_row_from_position(ghost->y);
+        if (column >= 0 && column < kPacManMazeColumns && row >= 0 && row < kPacManMazeRows) {
+            ghost->x = (column + 1) * kPacManTileSize;
+            ghost->y = (row + 1) * kPacManTileSize;
+        }
+        // The historical Eyesonly path targets the house gate with the same
+        // maze junction semantics. Use a bounded maze path here so the native
+        // eyes sprite cannot be trapped by a converted-coordinate dead-end;
+        // it remains wall-safe and collision-inactive throughout the route.
+        Direction selected = choose_returning_path_direction(*game, *ghost);
+        if (selected == Direction::None) {
+            selected = choose_pink_direction_impl(*game, *ghost,
+                                                   ghost->targetX, ghost->targetY);
+        }
+        if (selected != Direction::None) {
+            ghost->direction = selected;
+            ghost->requestedDirection = selected;
+        }
+    }
+    move_ghost_one_step(game, ghost);
+    if (ghost->x == 224 && ghost->direction == Direction::Up && ghost->y <= 184 && ghost->y >= 176) {
+        ghost->y = 184;
+        ghost->offset = 8;
+        enter_returning_house(game, ghost);
+    } else if (ghost->x == 224 && ghost->y == 184 && ghost->offset == 0) {
+        enter_returning_house(game, ghost);
+    }
+}
+
 static void update_red_ghost(GameState* game) {
     if (!game) return;
     GhostState& red = game->ghosts[0];
+    if (red.condition == GhostCondition::Eaten || red.condition == GhostCondition::Returning ||
+        red.releaseState == GhostReleaseState::ReturningHouse) {
+        update_returning_ghost(game, &red);
+        return;
+    }
     red.targetX = game->pacman.x;
     red.targetY = game->pacman.y;
     update_active_ghost(game, &red, red.targetX, red.targetY, false);
@@ -497,6 +887,11 @@ static void update_pink_ghost(GameState* game) {
     if (!game) return;
     GhostState& pink = game->ghosts[1];
     if (!pink.active) return;
+    if (pink.condition == GhostCondition::Eaten || pink.condition == GhostCondition::Returning ||
+        pink.releaseState == GhostReleaseState::ReturningHouse) {
+        update_returning_ghost(game, &pink);
+        return;
+    }
     const GhostTarget target = calculate_pink_target(*game, game->pacman);
     pink.targetX = target.x;
     pink.targetY = target.y;
@@ -559,6 +954,11 @@ static void update_cyan_ghost(GameState* game) {
     if (!game) return;
     GhostState& cyan = game->ghosts[2];
     if (!cyan.active) return;
+    if (cyan.condition == GhostCondition::Eaten || cyan.condition == GhostCondition::Returning ||
+        cyan.releaseState == GhostReleaseState::ReturningHouse) {
+        update_returning_ghost(game, &cyan);
+        return;
+    }
 
     const GhostTarget target = calculate_cyan_target(*game, game->pacman, game->ghosts[0]);
     cyan.targetX = target.x;
@@ -646,6 +1046,11 @@ static void update_orange_ghost(GameState* game) {
     if (!game) return;
     GhostState& orange = game->ghosts[3];
     if (!orange.active) return;
+    if (orange.condition == GhostCondition::Eaten || orange.condition == GhostCondition::Returning ||
+        orange.releaseState == GhostReleaseState::ReturningHouse) {
+        update_returning_ghost(game, &orange);
+        return;
+    }
 
     const GhostTarget target = calculate_orange_target(*game, game->pacman, orange);
     orange.targetX = target.x;
@@ -660,6 +1065,21 @@ static void update_orange_ghost(GameState* game) {
 
 static void enter_dying(GameState* game) {
     if (!game || game->playState != PlayState::Playing) return;
+
+    bool encounterWasActive = false;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        GhostState& ghost = game->ghosts[index];
+        if (ghost.condition != GhostCondition::Normal || ghost.powerPillStepsRemaining != 0) {
+            encounterWasActive = true;
+        }
+        ghost.condition = GhostCondition::Normal;
+        ghost.powerPillStepsRemaining = 0;
+        ghost.frightenedDelayToggle = false;
+        restore_ghost_normal_speed(*game, &ghost);
+        if (ghost.releaseState == GhostReleaseState::Normal) ghost.collisionActive = true;
+        else ghost.collisionActive = false;
+    }
+    if (encounterWasActive) game->powerPillEncounterReset = true;
 
     game->playState = PlayState::Dying;
     game->collisionDetected = true;
@@ -750,9 +1170,20 @@ const char* ghost_kind_name(GhostKind kind) {
     return "unknown";
 }
 
+const char* ghost_condition_name(GhostCondition condition) {
+    switch (condition) {
+    case GhostCondition::Normal: return "normal";
+    case GhostCondition::Frightened: return "frightened";
+    case GhostCondition::Eaten: return "eaten";
+    case GhostCondition::Returning: return "returning";
+    }
+    return "unknown";
+}
+
 const char* ghost_release_state_name(GhostReleaseState state) {
     switch (state) {
     case GhostReleaseState::Normal: return "normal";
+    case GhostReleaseState::ReturningHouse: return "returning-house";
     case GhostReleaseState::PinkHouseBounce: return "house-bounce";
     case GhostReleaseState::PinkToCenter: return "to-center";
     case GhostReleaseState::PinkExiting: return "exiting";
@@ -763,6 +1194,14 @@ const char* ghost_release_state_name(GhostReleaseState state) {
     case GhostReleaseState::OrangeExiting: return "orange-exiting";
     }
     return "unknown";
+}
+
+uint32_t game_frightened_duration_steps(const GameState& game) {
+    return frightened_duration_steps(game);
+}
+
+uint32_t game_frightened_flash_threshold(const GameState& game) {
+    return frightened_flash_threshold(game);
 }
 
 GhostTarget calculate_pink_target(const GameState& game, const PacManState& pacman) {
@@ -885,6 +1324,8 @@ GhostTarget calculate_orange_target(const GameState& game, const PacManState& pa
 
 void game_initialize(GameState* game) {
     if (!game) return;
+    game->gameSpeed = 1;
+    game->levelNumber = 1;
     reset_actor_positions(game);
     level_initialize(&game->level);
     game->ghosts[0].targetX = game->pacman.x;
@@ -893,7 +1334,8 @@ void game_initialize(GameState* game) {
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
-    game->levelNumber = 1;
+    game->ghostEatChain = 0;
+    game->frightenedFlashPhase = 0;
     game->lives = kPacManInitialLives;
     game->playState = PlayState::Playing;
     game->levelCompleteStepsRemaining = 0;
@@ -932,6 +1374,7 @@ void game_initialize(GameState* game) {
     game->gameOverEntered = false;
     game->sessionRestarted = false;
     game->suppressGhostCollisionsForValidation = false;
+    clear_power_event_flags(game);
     game->simulationSteps = 0;
 }
 
@@ -961,6 +1404,7 @@ void game_reset_level(GameState* game) {
     game->readyStepsRemaining = 0;
     game->visualDirty = true;
     game->levelReset = true;
+    game->powerPillEncounterReset = true;
     ++game->levelResetCount;
 }
 
@@ -975,6 +1419,9 @@ bool game_restart_session(GameState* game) {
     game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
     game->levelNumber = 1;
+    game->gameSpeed = 1;
+    game->ghostEatChain = 0;
+    game->frightenedFlashPhase = 0;
     game->lives = kPacManInitialLives;
     game->playState = PlayState::ReadyAfterDeath;
     game->levelCompleteStepsRemaining = 0;
@@ -1012,6 +1459,7 @@ bool game_restart_session(GameState* game) {
     game->actorReset = false;
     game->gameOverEntered = false;
     game->simulationSteps = 0;
+    clear_power_event_flags(game);
     return true;
 }
 
@@ -1079,6 +1527,7 @@ void game_update(GameState* game) {
     game->lifeDecremented = false;
     game->actorReset = false;
     game->gameOverEntered = false;
+    clear_power_event_flags(game);
 
     if (!game->focused) return;
 
@@ -1157,18 +1606,24 @@ void game_update(GameState* game) {
     if (pacman.mouth != oldMouth) game->visualDirty = true;
 
     // Update ordering is explicit: Pac-Man input and pill look-ahead, Pac-Man
-    // movement/animation, Red, Pink, Cyan, Orange, then one collision sample.
+    // movement/animation, Red, Pink, Cyan, Orange (with each ghost's timer
+    // decremented at the historical end of its own AI pass), then one
+    // collision sample.
     // Cyan observes Red's post-move position at this point; the source-
     // faithful Cyan target currently does not consume that position. Orange
     // observes Pac-Man after movement and the preceding ghosts after their
     // own updates, matching the VB6 loop order.
     update_red_ghost(game);
+    advance_power_pill_timer(game, &game->ghosts[0]);
     update_pink_ghost(game);
+    advance_power_pill_timer(game, &game->ghosts[1]);
     update_cyan_ghost(game);
+    advance_power_pill_timer(game, &game->ghosts[2]);
     update_orange_ghost(game);
-    if (!game->suppressGhostCollisionsForValidation && pacman_hits_any_ghost(*game)) {
-        enter_dying(game);
-    }
+    advance_power_pill_timer(game, &game->ghosts[3]);
+    if (!game->suppressGhostCollisionsForValidation) resolve_ghost_collisions(game);
+    ++game->frightenedFlashPhase;
+    game->frightenedFlashPhase %= 16u;
     ++game->simulationSteps;
 }
 

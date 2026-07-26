@@ -26,6 +26,7 @@ option(PACMAN_HOSTED_RED_MOVEMENT_TEST "Enable isolated hosted Red movement vali
 option(PACMAN_HOSTED_PINK_MOVEMENT_TEST "Enable isolated hosted Pink movement validation without forced collisions" OFF)
 option(PACMAN_HOSTED_CYAN_MOVEMENT_TEST "Enable isolated hosted Cyan movement validation without forced collisions" OFF)
 option(PACMAN_HOSTED_ORANGE_MOVEMENT_TEST "Enable isolated hosted Orange movement validation without forced collisions" OFF)
+option(PACMAN_HOSTED_POWER_PILL_TEST "Enable isolated hosted power-pill lifecycle validation" OFF)
 if(PACMAN_HOSTED_RED_MOVEMENT_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
     message(FATAL_ERROR "PACMAN_HOSTED_RED_MOVEMENT_TEST requires PACMAN_HOSTED_DANGER_TEST=ON so it remains in the validation package.")
 endif()
@@ -37,6 +38,9 @@ if(PACMAN_HOSTED_CYAN_MOVEMENT_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
 endif()
 if(PACMAN_HOSTED_ORANGE_MOVEMENT_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
     message(FATAL_ERROR "PACMAN_HOSTED_ORANGE_MOVEMENT_TEST requires PACMAN_HOSTED_DANGER_TEST=ON so it remains in the validation package.")
+endif()
+if(PACMAN_HOSTED_POWER_PILL_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
+    message(FATAL_ERROR "PACMAN_HOSTED_POWER_PILL_TEST requires PACMAN_HOSTED_DANGER_TEST=ON so it remains in the validation package.")
 endif()
 if(PACMAN_ENABLE_DIAGNOSTICS)
     set(PACMAN_DIAGNOSTIC_DEFINITION "-DPACMAN_ENABLE_DIAGNOSTICS=1")
@@ -68,6 +72,11 @@ if(PACMAN_HOSTED_ORANGE_MOVEMENT_TEST)
 else()
     set(PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION "-DPACMAN_HOSTED_ORANGE_MOVEMENT_TEST=0")
 endif()
+if(PACMAN_HOSTED_POWER_PILL_TEST)
+    set(PACMAN_POWER_PILL_TEST_DEFINITION "-DPACMAN_HOSTED_POWER_PILL_TEST=1")
+else()
+    set(PACMAN_POWER_PILL_TEST_DEFINITION "-DPACMAN_HOSTED_POWER_PILL_TEST=0")
+endif()
 if(PACMAN_HOSTED_DANGER_TEST)
     set(GUIDEXOS_ELF_NAME "pacman-danger-validation.elf")
     set(GUIDEXOS_STAGED_APP_DIR "${GUIDEXOS_PACKAGE_ROOT}/PacManDangerValidation")
@@ -94,7 +103,7 @@ set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUID
 
 add_custom_command(OUTPUT "${GUIDEXOS_MAIN_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} ${PACMAN_POWER_PILL_TEST_DEFINITION} -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
     DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/bitmap_loader.h src/renderer.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_GAME_OBJECT}"
@@ -125,7 +134,7 @@ add_custom_command(OUTPUT "${GUIDEXOS_ELF}"
 )
 add_custom_target(${GUIDEXOS_NATIVE_TARGET} ALL DEPENDS "${GUIDEXOS_ELF}")
 
-add_executable(pacman-game-tests tests/game_logic_test.cpp src/game.cpp src/level.cpp)
+add_executable(pacman-game-tests tests/game_logic_test.cpp src/game.cpp src/level.cpp src/renderer.cpp)
 target_include_directories(pacman-game-tests PRIVATE "${GUIDEXOS_SDK_ROOT}/include" "${GUIDEXOS_APP_ROOT}/src")
 set_target_properties(pacman-game-tests PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 

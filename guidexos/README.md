@@ -154,7 +154,13 @@ The values below are taken from `basPacSetUp.bas` and `basPacman.bas`, not infer
 
 Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames. The status strip shows the total remaining lives as a number, including zero in Game Over.
 
-Power pills still score 10 and disappear. They do not affect ghost movement; frightened mode and ghost eating are intentionally unimplemented.
+Power pills score 10, disappear, and activate the source-supported per-ghost
+frightened lifecycle. Each eligible ghost has its own level/speed-scaled
+10 ms timer, immediate reversal, half-speed frightened movement, blue/flash
+rendering, collision-safe ghost eating, 200/400/800/1600 score progression,
+eyes return/reset behavior, and normal restoration. The exact VB6 evidence and
+source quirks are recorded in
+[HISTORICAL_POWER_PILL_INVESTIGATION.md](HISTORICAL_POWER_PILL_INVESTIGATION.md).
 
 ## Red ghost movement milestone
 
@@ -310,6 +316,22 @@ The source inspection and deterministic/hosted evidence are recorded in
 `VALIDATION.md`. The retained Orange harness is
 `tools/validate_hosted_orange_movement.ps1`.
 
+## Power-pill hosted validation
+
+The deterministic power-pill proof uses a separate validation package and the
+same synchronized `gui.sync`/`gui.unfreeze` capture path described in
+`VALIDATION.md`. It holds Pac-Man over the historical lower-left power pill,
+captures normal and frightened states, verifies frightened movement and
+near-expiration flashing, eats all four ghosts for the 200/400/800/1600 chain,
+then verifies timer expiration and normal restoration. The hook is absent from
+the production ELF and does not write `D:\Apps\PacMan`:
+
+```powershell
+cmake -S . -B build-power-validation -G Ninja -DPACMAN_HOSTED_DANGER_TEST=ON -DPACMAN_HOSTED_POWER_PILL_TEST=ON -DPACMAN_ENABLE_DIAGNOSTICS=ON -DGUIDEXOS_SERVER_ROOT=D:\dev\guideXOSServer -DGUIDEXOS_PACKAGE_ROOT=D:\Apps
+cmake --build build-power-validation --target pacman-danger-validation
+powershell -ExecutionPolicy Bypass -File tools\validate_hosted_power_pill.ps1
+```
+
 ## Current limitations and next milestone
 
-The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red, Pink, Cyan, and Orange movement, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is input, pill look-ahead/completion, Pac-Man movement/animation, Red, Pink, Cyan, Orange, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. The historical source investigation found no shared Chase/Scatter or equivalent coordinated ghost-mode schedule; the evidence and exact source boundary are recorded in [HISTORICAL_GHOST_AI_INVESTIGATION.md](HISTORICAL_GHOST_AI_INVESTIGATION.md). Frightened mode, ghost eating, sounds, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is the source-supported power-pill behavior: per-ghost frightened timers, ghost color changes, ghost eating, and ghost score progression.
+The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red, Pink, Cyan, and Orange movement, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, per-ghost frightened timers and conditions, blue/flashing frightened rendering, ghost eating and score progression, eyes return/reset, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is input, pill look-ahead/completion, Pac-Man movement/animation, Red, Pink, Cyan, Orange, each timer decrement, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. The historical source investigation found no shared Chase/Scatter or equivalent coordinated ghost-mode schedule; the evidence and exact source boundary are recorded in [HISTORICAL_GHOST_AI_INVESTIGATION.md](HISTORICAL_GHOST_AI_INVESTIGATION.md). The source-backed power-pill evidence is recorded in [HISTORICAL_POWER_PILL_INVESTIGATION.md](HISTORICAL_POWER_PILL_INVESTIGATION.md). Sounds, fruit, extra lives, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is historically supported fruit/sound/UI behavior only if those source-backed systems are explicitly brought into scope.
