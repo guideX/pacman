@@ -39,6 +39,8 @@ $serverRoot = 'D:\dev\guideXOSServer'
 $serverRootFull = [IO.Path]::GetFullPath($serverRoot).TrimEnd('\')
 $serverExe = [IO.Path]::GetFullPath((Join-Path $serverRoot 'guideXOSServer.experimental.exe'))
 $normalServerExe = [IO.Path]::GetFullPath((Join-Path $serverRoot 'guideXOSServer.exe'))
+$desktopPath = Join-Path $serverRoot 'desktop.json'
+$desktopBytes = if (Test-Path -LiteralPath $desktopPath) { [File]::ReadAllBytes($desktopPath) } else { $null }
 $runId = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $rawLog = Join-Path $serverRoot "hosted-pacman-production-$runId-raw.log"
 $summaryPath = Join-Path $serverRoot "hosted-pacman-production-$runId-validation.txt"
@@ -226,6 +228,15 @@ try {
     $ghosts = @('red', 'pink', 'cyan', 'orange') | ForEach-Object { Wait-ForLog $_ 3000 } | Where-Object { $_ }
     $results.Add("discovery-and-elf-validation=$discovery")
     $results.Add("four-ghost-initialization=$($ghosts.Count -eq 4)")
+    $redRelease = Wait-ForLog 'PacMan Red state.*release=normal' 5000
+    $pinkRelease = Wait-ForLog 'PacMan Pink state.*release=normal' 12000
+    $cyanRelease = Wait-ForLog 'PacMan Cyan state.*release=normal' 12000
+    $orangeRelease = Wait-ForLog 'PacMan Orange state.*release=normal' 12000
+    $results.Add("production-ghost-release-red=$redRelease")
+    $results.Add("production-ghost-release-pink=$pinkRelease")
+    $results.Add("production-ghost-release-cyan=$cyanRelease")
+    $results.Add("production-ghost-release-orange=$orangeRelease")
+    $results.Add("production-all-four-release=$($redRelease -and $pinkRelease -and $cyanRelease -and $orangeRelease)")
     $noCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $cycleOneCollisionBaseline 500
     $results.Add("no-automatic-launch-collision=$noCollision")
 
@@ -283,7 +294,11 @@ finally {
         Start-Sleep -Milliseconds 500
         $remaining = @(Get-ServerProcesses)
         $results.Add("remaining-owned-server-processes=$($remaining.Count)")
+        $remainingCompositor = [PacManProductionCapture1]::FindWindow('GXOS_COMPOSITOR', 'guideXOSCpp Compositor')
+        $results.Add("remaining-owned-compositor-window=$([int]($remainingCompositor -ne [IntPtr]::Zero))")
         if ($process) { $results.Add("server-wrapper-exit-code=$($process.ExitCode)") }
+        if ($desktopBytes) { [File]::WriteAllBytes($desktopPath, $desktopBytes) }
+        $results.Add('desktop-json-restored=True')
     }
     catch {
         $failed = $true

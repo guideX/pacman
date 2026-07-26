@@ -1,0 +1,4 @@
+D:/dev/pacman/guidexos/build-orange/CMakeFiles/pacman-native.dir
+D:/dev/pacman/guidexos/build-orange/CMakeFiles/pacman-game-tests.dir
+D:/dev/pacman/guidexos/build-orange/CMakeFiles/edit_cache.dir
+D:/dev/pacman/guidexos/build-orange/CMakeFiles/rebuild_cache.dir

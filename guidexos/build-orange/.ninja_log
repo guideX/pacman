@@ -1,0 +1,23 @@
+# ninja log v7
+8	157	8067305164933471	CMakeFiles/pacman-game-tests.dir/src/game.cpp.obj	dbd27bfdb56743cd
+158	251	8067305166406537	CMakeFiles/pacman-game-tests.dir/src/level.cpp.obj	7ce7be4ffcf776b4
+6	429	8067307914584915	CMakeFiles/pacman-game-tests.dir/tests/game_logic_test.cpp.obj	a42120544c070227
+430	536	8067307918854013	pacman-game-tests.exe	5d572ae8837ed099
+4	115	8067311183851011	build.ninja	8255d723785cb914
+4	115	8067311183851011	D:/dev/pacman/guidexos/build-orange/cmake_install.cmake	8255d723785cb914
+2	78	8067311184775979	native-objects/bitmap_loader.o	7a6fd63cff2d9017
+2	78	8067311184775979	D:/dev/pacman/guidexos/build-orange/native-objects/bitmap_loader.o	7a6fd63cff2d9017
+9	120	8067311185197257	native-objects/game.o	28631faf7e3abe3f
+9	120	8067311185197257	D:/dev/pacman/guidexos/build-orange/native-objects/game.o	28631faf7e3abe3f
+79	160	8067311185604798	native-objects/level.o	3893ad7e158c7492
+79	160	8067311185604798	D:/dev/pacman/guidexos/build-orange/native-objects/level.o	3893ad7e158c7492
+120	205	8067311186042303	native-objects/main.o	5a2af080290572e0
+120	205	8067311186042303	D:/dev/pacman/guidexos/build-orange/native-objects/main.o	5a2af080290572e0
+160	241	8067311186360980	native-objects/renderer.o	6e6d865ba52673fc
+160	241	8067311186360980	D:/dev/pacman/guidexos/build-orange/native-objects/renderer.o	6e6d865ba52673fc
+241	307	8067311186994953	D:/dev/pacman/guidexos/bin/amd64/pacman.elf	a70a333f2617311d
+307	500	8067311187153154	CMakeFiles/pacman-native.util	3ea716222718e701
+5	90	8067314458194199	native-objects/main.o	5a2af080290572e0
+5	90	8067314458194199	D:/dev/pacman/guidexos/build-orange/native-objects/main.o	5a2af080290572e0
+90	162	8067314458990668	D:/dev/pacman/guidexos/bin/amd64/pacman.elf	a70a333f2617311d
+162	358	8067314458990668	CMakeFiles/pacman-native.util	3ea716222718e701

@@ -25,6 +25,10 @@
 #define PACMAN_HOSTED_CYAN_MOVEMENT_TEST 0
 #endif
 
+#ifndef PACMAN_HOSTED_ORANGE_MOVEMENT_TEST
+#define PACMAN_HOSTED_ORANGE_MOVEMENT_TEST 0
+#endif
+
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     for (uint64_t i = 0; i < bytes; ++i) output[i] = static_cast<uint8_t>(value);
@@ -146,6 +150,12 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_validation_ghost(message, &index, sizeof(message), " pink=", game.ghosts[1]);
     append_validation_ghost(message, &index, sizeof(message), " cyan=", game.ghosts[2]);
     append_validation_ghost(message, &index, sizeof(message), " orange=", game.ghosts[3]);
+    append_frame_text(message, &index, sizeof(message), " orangeDistanceTiles=");
+    append_frame_number(message, &index, sizeof(message),
+                        static_cast<uint64_t>(orange_distance_tiles(game.pacman, game.ghosts[3])));
+    append_frame_text(message, &index, sizeof(message), " orangeTargetMode=");
+    append_frame_text(message, &index, sizeof(message),
+                      orange_uses_far_target(game.pacman, game.ghosts[3]) ? "far" : "near");
     message[index] = '\0';
     ctx->host->log(ctx, message);
 }
@@ -200,6 +210,49 @@ static void log_game_value(gx_app_context* ctx, const char* prefix, uint32_t val
 #endif
 }
 
+#if PACMAN_ENABLE_DIAGNOSTICS
+static void log_diagnostic_ghost_state(gx_app_context* ctx, const char* label,
+                                       const GhostState& ghost) {
+    if (!ctx || !ctx->host || !ctx->host->log || !label) return;
+    char message[256];
+    uint32_t index = 0;
+    auto append_text = [&message, &index](const char* text) {
+        if (!text) return;
+        for (uint32_t i = 0; text[i] && index + 1u < sizeof(message); ++i) message[index++] = text[i];
+    };
+    auto append_number = [&message, &index](int64_t value) {
+        char digits[20];
+        uint32_t length = 0;
+        bool negative = value < 0;
+        uint64_t magnitude = negative ? static_cast<uint64_t>(-(value + 1)) + 1u : static_cast<uint64_t>(value);
+        do {
+            digits[length++] = static_cast<char>('0' + (magnitude % 10u));
+            magnitude /= 10u;
+        } while (magnitude != 0 && length < sizeof(digits));
+        if (negative && index + 1u < sizeof(message)) message[index++] = '-';
+        while (length > 0 && index + 1u < sizeof(message)) message[index++] = digits[--length];
+    };
+    append_text("PacMan ");
+    append_text(label);
+    append_text(" state x=");
+    append_number(ghost.x);
+    append_text(" y=");
+    append_number(ghost.y);
+    append_text(" dir=");
+    append_text(game_direction_name(ghost.direction));
+    append_text(" target=");
+    append_number(ghost.targetX);
+    append_text(",");
+    append_number(ghost.targetY);
+    append_text(" release=");
+    append_text(ghost_release_state_name(ghost.releaseState));
+    append_text(" anim=");
+    append_number(ghost.animationFrame);
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+}
+#endif
+
 static void log_game_events(gx_app_context* ctx, const GameState& game) {
 #if PACMAN_ENABLE_DIAGNOSTICS
     if (!ctx || !ctx->host || !ctx->host->log) return;
@@ -220,36 +273,10 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (game.lifeDecremented) log_game_value(ctx, "PacMan life decremented; lives remaining: ", game.lives);
     if (game.actorReset) ctx->host->log(ctx, "PacMan actors reset after death");
     if (game.gameOverEntered) ctx->host->log(ctx, "PacMan Game Over entered");
-    char message[192];
-    uint32_t index = 0;
-    const char* prefix = "PacMan Red state x=";
-    while (prefix[index] && index + 1u < sizeof(message)) message[index++] = prefix[index];
-    auto append_number = [&message, &index](uint32_t value) {
-        char digits[10];
-        uint32_t length = 0;
-        do {
-            digits[length++] = static_cast<char>('0' + (value % 10u));
-            value /= 10u;
-        } while (value != 0 && length < sizeof(digits));
-        while (length > 0 && index + 1u < sizeof(message)) message[index++] = digits[--length];
-    };
-    auto append_text = [&message, &index](const char* text) {
-        if (!text) return;
-        for (uint32_t i = 0; text[i] && index + 1u < sizeof(message); ++i) message[index++] = text[i];
-    };
-    append_number(static_cast<uint32_t>(game.ghosts[0].x));
-    append_text(" y=");
-    append_number(static_cast<uint32_t>(game.ghosts[0].y));
-    append_text(" dir=");
-    append_text(game_direction_name(game.ghosts[0].direction));
-    append_text(" target=");
-    append_number(static_cast<uint32_t>(game.ghosts[0].targetX));
-    append_text(",");
-    append_number(static_cast<uint32_t>(game.ghosts[0].targetY));
-    append_text(" anim=");
-    append_number(game.ghosts[0].animationFrame);
-    message[index] = '\0';
-    ctx->host->log(ctx, message);
+    static const char* labels[] = {"Red", "Pink", "Cyan", "Orange"};
+    for (uint32_t ghostIndex = 0; ghostIndex < kPacManGhostCount; ++ghostIndex) {
+        log_diagnostic_ghost_state(ctx, labels[ghostIndex], game.ghosts[ghostIndex]);
+    }
 #else
     (void)ctx;
     (void)game;
@@ -296,7 +323,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     GameState game;
     game_initialize(&game);
 #if PACMAN_ENABLE_DIAGNOSTICS
-    ctx->host->log(ctx, "PacMan ghosts initialized: Red and Pink moving; Cyan and Orange stationary");
+    ctx->host->log(ctx, "PacMan ghosts initialized: Red, Pink, Cyan, and Orange moving");
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
         const GhostState& ghost = game.ghosts[index];
         ctx->host->log(ctx, ghost_kind_name(ghost.kind));
@@ -354,6 +381,22 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     game.visualDirty = true;
     ctx->host->log(ctx, "PacMan hosted Cyan movement validation enabled");
 #endif
+#if PACMAN_HOSTED_ORANGE_MOVEMENT_TEST
+    // Validation-only target control. Orange's normal release, movement,
+    // target selection, tunnel handling, collision, and reset code remain the
+    // production path; this hook only holds Pac-Man still and later moves it
+    // across Orange's historical threshold. It is absent from pacman.elf.
+    game.pacman.x = 64;
+    game.pacman.y = 232;
+    game.pacman.direction = Direction::Right;
+    game.pacman.facingDirection = Direction::Right;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game.suppressGhostCollisionsForValidation = true;
+    game.visualDirty = true;
+    ctx->host->log(ctx, "PacMan hosted Orange movement validation enabled");
+#endif
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
@@ -381,6 +424,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     bool simulationStartedLogged = false;
 #if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
     uint32_t hostedDangerPlacementCount = 0;
+#endif
+#if PACMAN_HOSTED_ORANGE_MOVEMENT_TEST
+    bool orangeThresholdSwitched = false;
+    uint64_t orangeThresholdSwitchStep = 0;
 #endif
 
     while (running) {
@@ -521,6 +568,38 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 ctx->host->log(ctx, "PacMan hosted Cyan movement collision window enabled");
             }
 #endif
+#if PACMAN_HOSTED_ORANGE_MOVEMENT_TEST
+            if (game.playState == PlayState::Playing && game.suppressGhostCollisionsForValidation &&
+                !orangeThresholdSwitched && game.ghosts[3].releaseState == GhostReleaseState::Normal &&
+                game.ghosts[3].offset == 0 && game.simulationSteps >= 240u) {
+                // Cross from the far side to exactly four historical tiles at
+                // Orange's next legal decision point. Four is intentionally
+                // the near side because VB6 projects only when distance > 4.
+                game.pacman.x = game.ghosts[3].x + 64;
+                game.pacman.y = game.ghosts[3].y;
+                game.pacman.direction = Direction::Left;
+                game.pacman.facingDirection = Direction::Left;
+                game.pacman.requestedDirection = Direction::None;
+                game.pacman.offset = 0;
+                game.pacman.speed = 0;
+                orangeThresholdSwitched = true;
+                orangeThresholdSwitchStep = game.simulationSteps;
+                ctx->host->log(ctx, "PacMan hosted Orange threshold switch to near target");
+            }
+            if (game.playState == PlayState::Playing && game.suppressGhostCollisionsForValidation &&
+                orangeThresholdSwitched && game.ghosts[3].releaseState == GhostReleaseState::Normal &&
+                game.simulationSteps >= orangeThresholdSwitchStep + 80u) {
+                game.pacman.x = game.ghosts[3].x;
+                game.pacman.y = game.ghosts[3].y;
+                game.pacman.direction = Direction::None;
+                game.pacman.facingDirection = Direction::None;
+                game.pacman.requestedDirection = Direction::None;
+                game.pacman.offset = 0;
+                game.pacman.speed = 0;
+                game.suppressGhostCollisionsForValidation = false;
+                ctx->host->log(ctx, "PacMan hosted Orange movement collision window enabled");
+            }
+#endif
             game_update(&game);
             accumulatorMs -= kFixedStepMs;
             ++updates;
@@ -533,6 +612,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (game.tunnelWrapped) ctx->host->log(ctx, "PacMan tunnel wrap");
             if (game.redTunnelWrapped) ctx->host->log(ctx, "PacMan Red ghost tunnel wrap");
             if (game.cyanTunnelWrapped) ctx->host->log(ctx, "PacMan Cyan ghost tunnel wrap");
+            if (game.orangeTunnelWrapped) ctx->host->log(ctx, "PacMan Orange ghost tunnel wrap");
             log_game_events(ctx, game);
         }
         if (updates == kMaxCatchUpSteps && accumulatorMs >= kFixedStepMs) {

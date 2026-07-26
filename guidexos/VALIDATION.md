@@ -48,7 +48,7 @@ does not replace death, Ready, Game Over, or restart visuals.
 
 ## Current ghost scope
 
-Red, Pink, and Cyan are the moving ghosts in this milestone. The historical Red
+Red, Pink, Cyan, and Orange are the moving ghosts in this milestone. The historical Red
 rule targets Pac-Man's current logical position directly; projected targets in
 the original VB6 code belong to later ghosts and are not copied into Red's
 helper. Red starts at
@@ -73,9 +73,9 @@ frame per direction.
 
 The verified update order is input, aligned Pac-Man turn and wall handling,
 next-tile pill consumption and level-completion check, Pac-Man movement and
-tunnel wrap, mouth animation, Red movement, Pink movement, Cyan movement, one
-collision sample, then the simulation step/state-timer advance and dirty-frame
-marking.
+tunnel wrap, mouth animation, Red movement, Pink movement, Cyan movement,
+Orange movement, one collision sample, then the simulation step/state-timer
+advance and dirty-frame marking.
 If the final pill is consumed on an update, LevelComplete returns before any
 moving ghost or collision on that update. All four non-Playing states gate all
 moving ghosts, and one collision sample suppresses duplicate multi-ghost overlap
@@ -83,9 +83,9 @@ life loss.
 
 Pink starts at `(192,224)`, facing Up, in `PinkHouseBounce` with collision
 inactive. The historical VB6 source bounces Ghost(2), moves it right to
-`(224,224)`, and sends it up the fixed house door lane to `(224,184)`. Because
-Cyan remains stationary in this milestone, the port uses a deterministic two-
-alignment bounce wait before the same route. Pink becomes collision-active only
+`(224,224)`, and sends it up the fixed house door lane to `(224,184)`. The port
+keeps a deterministic two-alignment bounce wait and gates the source-faithful
+center-lane release on Cyan's normal release state. Pink becomes collision-active only
 after the release state becomes `normal`; death, level reset, and Game Over
 restart restore the house state.
 
@@ -125,12 +125,50 @@ to the maze before direction scoring. Cyan observes Red's post-move position in
 the update order, although the source-faithful helper does not use it.
 
 Cyan and Orange reset to `(224,240)` and `(256,224)` respectively after death,
-level completion, and Game Over restart. Orange remains stationary and its
-target/release state is never advanced. The ordinary danger placement remains
+level completion, and Game Over restart. The ordinary danger placement remains
 test-only and temporarily overlaps Red with Pac-Man for the existing three-life
 regression. The Cyan movement mode pins Pac-Man still, suppresses unrelated
 collisions, and arms one deterministic moving-Cyan collision after route
 captures.
+
+## Orange source and validation contract
+
+Historical inspection of `basGhostAI.bas`, `basPacSetUp.bas`, and
+`frmPacMan.frm` verified Orange as Ghost(4): spawn `(256,224)`, initial
+direction Up, inside the ghost house, `Offset=0`, `InGame=False`, and speed 1
+logical pixel per 10 ms. The shared source release branch bounces vertically
+between `y=224` and `y=240`; once Pink's `InGame` condition is true, Orange
+moves left from `(256,224)` to `x=224`, turns Up through the fixed doorway, and
+becomes normal and collision-active at `y=184`. The native port represents that
+sequence as `OrangeHouseBounce -> OrangeToCenter -> OrangeExiting -> Normal`.
+The VB6 activation direction uses `2 + Rnd`; the native build chooses Left
+deterministically at activation, while preserving the historical initial Up.
+
+Orange's target is a pure, state-preserving helper. Its exact metric is raw
+integer VB6 tile distance:
+
+```text
+distanceTiles = Abs(Pacman.Xpos \ 16 - Orange.Xpos \ 16)
+              + Abs(Pacman.Ypos \ 16 - Orange.Ypos \ 16)
+```
+
+The projection comparison is strictly `distanceTiles > 4`. At 0–4 tiles the
+target is Pac-Man's current logical coordinate. Above 4 tiles the target is
+`targetX = PacManX + XD(Direction) * 12 * 16` and
+`targetY = PacManY + XD(Direction) * 12 * 16`. The `XD` value is intentionally
+used on Y as in the source: Left/Right project both axes; Up/Down project
+neither. This is not a Red dependency, a fixed corner, random behavior, or
+arcade Clyde substitution. Raw tunnel-adjacent coordinates are used for the
+distance; tunnel wrapping is movement-only, and off-maze logical target values
+are retained with bounded integer conversion.
+
+Orange uses the validated Pink/Cyan sign-priority chooser. It decides only at
+aligned centers, continues committed directions through a tile, enumerates
+Up/Down/Left/Right with horizontal overwrite priority, excludes reverse when an
+alternative exists, permits reverse at a dead end, and wraps only on row 14.
+The renderer uses the historical Orange body column 96, directional rows, the
+two bounded movement frames, and the existing mask composition. Collision is
+the strict `<16` center test after Red, Pink, Cyan, and Orange each update once.
 
 The reusable Red harness is `tools/validate_hosted_red_movement.ps1`. It builds
 and launches only the validation package, uses one owned experimental server,
@@ -156,3 +194,15 @@ moving collision, and Ready house reset with the same `gui.sync`/freeze
 generation checks. It also records Red movement and the source-faithful fact
 that Cyan's target is unchanged when only Red moves. Its compile-time marker
 and forced collision behavior are absent from the production ELF.
+
+The reusable Orange harness is `tools/validate_hosted_orange_movement.ps1`.
+Build with `PACMAN_HOSTED_DANGER_TEST=ON` and
+`PACMAN_HOSTED_ORANGE_MOVEMENT_TEST=ON`. It starts exactly one owned
+experimental server, records wrapper/child PIDs and runtime/window identity,
+captures initial house, center lane, maze exit, far corridor, far turn,
+near-threshold switch, near route, distant route, moving-collision Dying, and
+Ready reset, and reports application sequence plus matching frame/paint/capture
+generations. The threshold proof records far distance/target and then a frame at
+exactly four tiles using the near target. The validation-only hook holds
+Pac-Man, changes it at Orange's next legal decision, arms one moving collision,
+and is absent from production `pacman.elf`.

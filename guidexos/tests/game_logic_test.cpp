@@ -91,6 +91,13 @@ void disable_non_cyan_ghosts(GameState* game) {
     game->ghosts[3].active = false;
 }
 
+void disable_non_orange_ghosts(GameState* game) {
+    if (!game) return;
+    game->ghosts[0].active = false;
+    game->ghosts[1].active = false;
+    game->ghosts[2].active = false;
+}
+
 void enable_normal_pink(GameState* game) {
     if (!game) return;
     GhostState& pink = game->ghosts[1];
@@ -110,6 +117,18 @@ void enable_normal_cyan(GameState* game) {
     cyan.releaseStepsRemaining = 0;
     cyan.speed = 1;
 }
+
+void enable_normal_orange(GameState* game) {
+    if (!game) return;
+    GhostState& orange = game->ghosts[3];
+    orange.active = true;
+    orange.collisionActive = true;
+    orange.releaseState = GhostReleaseState::Normal;
+    orange.releaseStepsRemaining = 0;
+    orange.speed = 1;
+}
+
+void place_stationary_collision(GameState* game, GhostKind kind);
 
 bool find_tie_point(const GameState& game, int* x, int* y, Direction* current,
                     Direction* expected) {
@@ -650,6 +669,394 @@ bool test_cyan_direction_selection_and_tunnels() {
     return ok;
 }
 
+bool test_orange_target_and_release_state() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    const GhostState& initialOrange = game.ghosts[3];
+    ok &= expect(initialOrange.x == 256 && initialOrange.y == 224,
+                 "Orange starts at the historical right-house position");
+    ok &= expect(initialOrange.direction == Direction::Up && initialOrange.speed == 1,
+                 "Orange starts facing Up at the historical speed");
+    ok &= expect(initialOrange.active &&
+                 initialOrange.releaseState == GhostReleaseState::OrangeHouseBounce &&
+                 !initialOrange.collisionActive,
+                 "Orange starts inside the house with collision inactive");
+
+    GhostState orange = initialOrange;
+    orange.x = 160;
+    orange.y = 160;
+    PacManState pacman = game.pacman;
+    pacman.x = 208;
+    pacman.y = 160;
+    pacman.direction = Direction::Right;
+    pacman.facingDirection = Direction::Right;
+    ok &= expect(orange_distance_tiles(pacman, orange) == 3 &&
+                 !orange_uses_far_target(pacman, orange) &&
+                 calculate_orange_target(game, pacman, orange).x == pacman.x &&
+                 calculate_orange_target(game, pacman, orange).y == pacman.y,
+                 "Orange uses its near target exactly below the strict threshold");
+
+    pacman.x = 224;
+    ok &= expect(orange_distance_tiles(pacman, orange) == 4 &&
+                 !orange_uses_far_target(pacman, orange) &&
+                 calculate_orange_target(game, pacman, orange).x == pacman.x &&
+                 calculate_orange_target(game, pacman, orange).y == pacman.y,
+                 "Orange remains near at exactly four Manhattan tiles");
+
+    pacman.x = 240;
+    ok &= expect(orange_distance_tiles(pacman, orange) == 5 &&
+                 orange_uses_far_target(pacman, orange) &&
+                 calculate_orange_target(game, pacman, orange).x == pacman.x + 192 &&
+                 calculate_orange_target(game, pacman, orange).y == pacman.y + 192,
+                 "Orange switches to twelve-tile far targeting exactly above four tiles");
+
+    pacman.x = 160;
+    pacman.y = 240;
+    ok &= expect(orange_distance_tiles(pacman, orange) == 5 && orange_uses_far_target(pacman, orange),
+                 "Orange threshold uses vertical Manhattan separation");
+    pacman.x = 208;
+    pacman.y = 192;
+    ok &= expect(orange_distance_tiles(pacman, orange) == 5 && orange_uses_far_target(pacman, orange),
+                 "Orange threshold uses diagonal Manhattan separation");
+
+    pacman.x = 16;
+    pacman.y = 232;
+    orange.x = 416;
+    orange.y = 232;
+    pacman.direction = Direction::Left;
+    const GhostTarget tunnelTarget = calculate_orange_target(game, pacman, orange);
+    ok &= expect(orange_distance_tiles(pacman, orange) == 25 &&
+                 tunnelTarget.x == -176 && tunnelTarget.y == 40,
+                 "Orange uses raw historical tile distance near the tunnel and keeps off-maze targets");
+
+    orange.x = 160;
+    orange.y = 160;
+    pacman.x = 240;
+    pacman.y = 160;
+    const Direction directions[] = {
+        Direction::Right, Direction::Left, Direction::Up, Direction::Down
+    };
+    const int expectedX[] = {432, 48, 240, 240};
+    const int expectedY[] = {352, -32, 160, 160};
+    for (int index = 0; index < 4; ++index) {
+        pacman.direction = directions[index];
+        pacman.facingDirection = directions[index];
+        const GhostTarget target = calculate_orange_target(game, pacman, orange);
+        ok &= expect(target.x == expectedX[index] && target.y == expectedY[index],
+                     "Orange preserves the historical XD projection for every Pac-Man direction");
+    }
+    const GhostState unchangedOrange = orange;
+    const GhostTarget unchangedTarget = calculate_orange_target(game, pacman, orange);
+    ok &= expect(orange.x == unchangedOrange.x && orange.y == unchangedOrange.y &&
+                 orange.direction == unchangedOrange.direction &&
+                 unchangedTarget.x == 240 && unchangedTarget.y == 160,
+                 "Orange target calculation is deterministic and does not mutate state");
+    return ok;
+}
+
+bool test_orange_release_and_movement() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    disable_non_orange_ghosts(&game);
+    game.ghosts[1].releaseState = GhostReleaseState::PinkHouseBounce;
+    game.pacman.x = 64;
+    game.pacman.y = 232;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game.suppressGhostCollisionsForValidation = true;
+
+    game_update(&game);
+    ok &= expect(game.ghosts[3].x == 256 && game.ghosts[3].y == 225 &&
+                 game.ghosts[3].direction == Direction::Down &&
+                 game.ghosts[3].releaseState == GhostReleaseState::OrangeHouseBounce &&
+                 !game.ghosts[3].collisionActive,
+                 "Orange begins with the historical vertical bounce and remains inactive");
+    for (uint32_t step = 0; step < 30; ++step) game_update(&game);
+    ok &= expect(game.ghosts[3].x == 256 && game.ghosts[3].y >= 224 && game.ghosts[3].y <= 240 &&
+                 game.ghosts[3].releaseState == GhostReleaseState::OrangeHouseBounce,
+                 "Orange remains in the house until the Pink release condition is met");
+
+    game.ghosts[1].releaseState = GhostReleaseState::Normal;
+    game.ghosts[1].active = false;
+    bool sawHouse = false;
+    bool sawCenter = false;
+    bool sawExit = false;
+    bool sawNormal = false;
+    uint32_t startedCount = 0;
+    uint32_t completedCount = 0;
+    for (uint32_t step = 0; step < 240; ++step) {
+        game_update(&game);
+        startedCount += game.orangeReleaseStarted ? 1u : 0u;
+        completedCount += game.orangeReleaseCompleted ? 1u : 0u;
+        const GhostState& orange = game.ghosts[3];
+        if (orange.releaseState == GhostReleaseState::OrangeHouseBounce) {
+            sawHouse = true;
+            ok &= expect(orange.x == 256 && orange.y >= 224 && orange.y <= 240 &&
+                         (orange.direction == Direction::Up || orange.direction == Direction::Down),
+                         "Orange house bounce stays on its historical right vertical lane");
+        } else if (orange.releaseState == GhostReleaseState::OrangeToCenter) {
+            sawCenter = true;
+            ok &= expect(orange.y == 224 && orange.x >= 224 && orange.x <= 256,
+                         "Orange moves left through the house center lane");
+        } else if (orange.releaseState == GhostReleaseState::OrangeExiting) {
+            sawExit = true;
+            ok &= expect(orange.x == 224 && orange.y >= 184 && orange.y <= 224,
+                         "Orange exits upward through the fixed x=224 doorway");
+            ok &= expect(!orange.collisionActive, "Orange remains collision-inactive during house exit");
+        } else if (orange.releaseState == GhostReleaseState::Normal) {
+            sawNormal = true;
+            break;
+        }
+    }
+    ok &= expect(sawHouse && sawCenter && sawExit && sawNormal && startedCount == 1 && completedCount == 1,
+                 "Orange release starts and completes exactly once");
+    ok &= expect(game.ghosts[3].x == 224 && game.ghosts[3].y == 184 &&
+                 game.ghosts[3].offset == 8 && game.ghosts[3].collisionActive &&
+                 game.ghosts[3].direction == Direction::Left,
+                 "Orange becomes collision-active at the outside-house boundary");
+
+    const int beforeX = game.ghosts[3].x;
+    const int beforeY = game.ghosts[3].y;
+    const uint8_t beforeAnimation = game.ghosts[3].animationFrame;
+    game_update(&game);
+    ok &= expect(beforeX - game.ghosts[3].x + beforeY - game.ghosts[3].y == 1 &&
+                 game.ghosts[3].animationFrame != beforeAnimation,
+                 "Orange continues normal movement at one logical pixel per fixed step");
+    for (uint32_t step = 0; step < 120; ++step) {
+        game_update(&game);
+        const int column = level_column_from_position(game.ghosts[3].x);
+        const int row = level_row_from_position(game.ghosts[3].y);
+        ok &= expect(is_walkable_cell(level_cell(game.level, column, row)),
+                     "Moving Orange remains inside legal maze paths");
+    }
+    return ok;
+}
+
+bool test_orange_direction_selection_and_tunnels() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    GhostState& orange = game.ghosts[3];
+    orange.x = 208;
+    orange.y = 184;
+    orange.direction = Direction::Left;
+    orange.requestedDirection = Direction::Left;
+    orange.offset = 0;
+    ok &= expect(choose_orange_direction(game, orange, 208, 24) == Direction::Up,
+                 "Orange reuses the historical sign-priority turn at an intersection");
+    ok &= expect(choose_orange_direction(game, orange, 208, 24) ==
+                 choose_orange_direction(game, orange, 208, 24),
+                 "Orange direction selection is deterministic");
+
+    bool foundHorizontalPriority = false;
+    for (int row = 0; row < kPacManMazeRows && !foundHorizontalPriority; ++row) {
+        for (int column = 0; column < kPacManMazeColumns && !foundHorizontalPriority; ++column) {
+            const int x = column * kPacManTileSize + 8;
+            const int y = row * kPacManTileSize + 8;
+            if (!can_move(game, x, y, Direction::Up) ||
+                !can_move(game, x, y, Direction::Right)) continue;
+            orange.x = x;
+            orange.y = y;
+            orange.direction = Direction::Up;
+            orange.requestedDirection = Direction::Up;
+            orange.offset = 0;
+            if (choose_orange_direction(game, orange, x + 192, y - 192) == Direction::Right) {
+                foundHorizontalPriority = true;
+            }
+        }
+    }
+    ok &= expect(foundHorizontalPriority,
+                 "Orange preserves historical horizontal-over-vertical sign priority");
+
+    GameState deadEndGame = game;
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        for (int column = 0; column < kPacManMazeColumns; ++column) {
+            deadEndGame.level.cells[row][column] = CellType::Wall;
+        }
+    }
+    deadEndGame.level.cells[5][5] = CellType::Empty;
+    deadEndGame.level.cells[4][5] = CellType::Empty;
+    GhostState deadEndOrange = deadEndGame.ghosts[3];
+    deadEndOrange.x = 5 * kPacManTileSize + 8;
+    deadEndOrange.y = 5 * kPacManTileSize + 8;
+    deadEndOrange.direction = Direction::Down;
+    deadEndOrange.requestedDirection = Direction::Down;
+    deadEndOrange.offset = 0;
+    ok &= expect(choose_orange_direction(deadEndGame, deadEndOrange, 224, 376) == Direction::Up,
+                 "Orange reverses only when a dead end leaves no alternative");
+
+    game_initialize(&game);
+    disable_non_orange_ghosts(&game);
+    enable_normal_orange(&game);
+    game.suppressGhostCollisionsForValidation = true;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    orange = game.ghosts[3];
+    orange.x = 16;
+    orange.y = 232;
+    orange.direction = Direction::Left;
+    orange.requestedDirection = Direction::Left;
+    orange.offset = 1;
+    game_update(&game);
+    ok &= expect(orange.x == 431 && orange.y == 232 && game.orangeTunnelWrapped,
+                 "Orange wraps left-to-right through the horizontal tunnel");
+
+    orange.x = 424;
+    orange.y = 232;
+    orange.direction = Direction::Right;
+    orange.requestedDirection = Direction::Right;
+    orange.offset = 1;
+    game_update(&game);
+    ok &= expect(orange.x == 9 && orange.y == 232 && game.orangeTunnelWrapped,
+                 "Orange wraps right-to-left through the horizontal tunnel");
+
+    orange.x = 16;
+    orange.y = 216;
+    orange.direction = Direction::Left;
+    orange.requestedDirection = Direction::Left;
+    orange.offset = 0;
+    game_update(&game);
+    ok &= expect(!game.orangeTunnelWrapped && orange.x != 431 && orange.x != 9,
+                 "Orange never wraps outside the historical tunnel row");
+    return ok;
+}
+
+bool test_orange_collisions_and_state_gates() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    disable_non_orange_ghosts(&game);
+    enable_normal_orange(&game);
+    GhostState& orange = game.ghosts[3];
+    orange.x = 208;
+    orange.y = 184;
+    orange.direction = Direction::Right;
+    orange.requestedDirection = Direction::Right;
+    orange.offset = 1;
+    orange.speed = 1;
+    game.pacman.x = 223;
+    game.pacman.y = 184;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.collisionDetected &&
+                 game.lives == kPacManInitialLives - 1 && orange.x != 208,
+                 "Moving Orange collision enters Dying and deducts one life");
+
+    GameState overlapGame{};
+    game_initialize(&overlapGame);
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        overlapGame.ghosts[index].x = 180;
+        overlapGame.ghosts[index].y = 200;
+        overlapGame.ghosts[index].active = true;
+        overlapGame.ghosts[index].collisionActive = true;
+        overlapGame.ghosts[index].speed = 0;
+        overlapGame.ghosts[index].releaseState = GhostReleaseState::Normal;
+    }
+    overlapGame.pacman.x = 180;
+    overlapGame.pacman.y = 200;
+    overlapGame.pacman.direction = Direction::None;
+    overlapGame.pacman.facingDirection = Direction::None;
+    overlapGame.pacman.requestedDirection = Direction::None;
+    overlapGame.pacman.offset = 1;
+    overlapGame.pacman.speed = 0;
+    game_update(&overlapGame);
+    ok &= expect(overlapGame.playState == PlayState::Dying && overlapGame.lives == kPacManInitialLives - 1 &&
+                 overlapGame.deathTransitions == 1,
+                 "Simultaneous four-ghost overlap deducts one life only");
+
+    const PlayState states[] = {
+        PlayState::Dying, PlayState::ReadyAfterDeath, PlayState::LevelComplete, PlayState::GameOver
+    };
+    for (uint32_t index = 0; index < sizeof(states) / sizeof(states[0]); ++index) {
+        game_initialize(&game);
+        disable_non_orange_ghosts(&game);
+        enable_normal_orange(&game);
+        game.ghosts[3].x = 208;
+        game.ghosts[3].y = 184;
+        game.ghosts[3].direction = Direction::Right;
+        game.ghosts[3].requestedDirection = Direction::Right;
+        game.ghosts[3].offset = 1;
+        game.ghosts[3].speed = 1;
+        game.playState = states[index];
+        game.deathStepsRemaining = 100;
+        game.readyStepsRemaining = 100;
+        game.levelCompleteStepsRemaining = 100;
+        const int oldX = game.ghosts[3].x;
+        const int oldY = game.ghosts[3].y;
+        game_update(&game);
+        ok &= expect(game.ghosts[3].x == oldX && game.ghosts[3].y == oldY,
+                     "Orange stops during every non-Playing state");
+    }
+    return ok;
+}
+
+bool test_orange_reset_lifecycle_and_four_ghost_update() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    place_stationary_collision(&game, GhostKind::Orange);
+    game_update(&game);
+    for (uint32_t step = 0; step < kPacManDeathDurationSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::ReadyAfterDeath &&
+                 game.ghosts[3].x == 256 && game.ghosts[3].y == 224 &&
+                 game.ghosts[3].direction == Direction::Up &&
+                 game.ghosts[3].releaseState == GhostReleaseState::OrangeHouseBounce &&
+                 !game.ghosts[3].collisionActive && game.ghosts[3].speed == 1,
+                 "Orange resets to its house release state after death");
+
+    game_reset_level(&game);
+    ok &= expect(game.levelNumber == 2 && game.ghosts[3].x == 256 && game.ghosts[3].y == 224 &&
+                 game.ghosts[3].releaseState == GhostReleaseState::OrangeHouseBounce,
+                 "Orange resets after level completion");
+    game.playState = PlayState::GameOver;
+    ok &= expect(game_restart_session(&game) && game.ghosts[3].x == 256 && game.ghosts[3].y == 224 &&
+                 game.ghosts[3].releaseState == GhostReleaseState::OrangeHouseBounce &&
+                 game.ghosts[3].speed == 1,
+                 "Orange resets after Game Over restart");
+
+    game_initialize(&game);
+    game.suppressGhostCollisionsForValidation = true;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.offset = 1;
+    game.pacman.speed = 0;
+    const int initialX[] = {208, 224, 240, 256};
+    const Direction initialDirection[] = {
+        Direction::Right, Direction::Left, Direction::Right, Direction::Left
+    };
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        GhostState& ghost = game.ghosts[index];
+        ghost.x = initialX[index];
+        ghost.y = 184;
+        ghost.direction = initialDirection[index];
+        ghost.requestedDirection = initialDirection[index];
+        ghost.offset = 1;
+        ghost.speed = 1;
+        ghost.active = true;
+        ghost.collisionActive = true;
+        ghost.releaseState = GhostReleaseState::Normal;
+    }
+    game_update(&game);
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        ok &= expect(game.ghosts[index].x != initialX[index] && game.ghosts[index].animationFrame == 1,
+                     "All four ghosts move once and animate in the deterministic update order");
+    }
+    return ok;
+}
+
 bool test_pink_collisions_and_state_gates() {
     bool ok = true;
     GameState game{};
@@ -762,10 +1169,6 @@ bool test_pink_reset_lifecycle_and_stationary_companions() {
     const int cyanY = game.ghosts[2].y;
     const int orangeX = game.ghosts[3].x;
     const int orangeY = game.ghosts[3].y;
-    const Direction orangeDirection = game.ghosts[3].direction;
-    const GhostReleaseState orangeRelease = game.ghosts[3].releaseState;
-    const int orangeTargetX = game.ghosts[3].targetX;
-    const int orangeTargetY = game.ghosts[3].targetY;
     game.pacman.direction = Direction::None;
     game.pacman.facingDirection = Direction::None;
     game.pacman.requestedDirection = Direction::None;
@@ -776,11 +1179,10 @@ bool test_pink_reset_lifecycle_and_stationary_companions() {
     ok &= expect(game.ghosts[2].x != cyanX || game.ghosts[2].y != cyanY ||
                  game.ghosts[2].releaseState != GhostReleaseState::CyanHouseBounce,
                  "Cyan progresses through its house release while Pink remains independent");
-    ok &= expect(game.ghosts[3].x == orangeX && game.ghosts[3].y == orangeY &&
-                 game.ghosts[3].direction == orangeDirection &&
-                 game.ghosts[3].releaseState == orangeRelease &&
-                 game.ghosts[3].targetX == orangeTargetX && game.ghosts[3].targetY == orangeTargetY,
-                 "Orange remains stationary and is not activated by shared movement");
+    ok &= expect(game.ghosts[3].active && game.ghosts[3].speed == 1 &&
+                 (game.ghosts[3].x != orangeX || game.ghosts[3].y != orangeY ||
+                  game.ghosts[3].releaseState != GhostReleaseState::OrangeHouseBounce),
+                 "Orange follows its own release state independently");
     return ok;
 }
 
@@ -1020,8 +1422,9 @@ bool test_red_ghost_movement() {
     ok &= expect((game.ghosts[1].x != pinkX || game.ghosts[1].y != pinkY) &&
                  (game.ghosts[2].x != cyanX || game.ghosts[2].y != cyanY ||
                   game.ghosts[2].releaseState != GhostReleaseState::CyanHouseBounce) &&
-                 game.ghosts[3].x == orangeX && game.ghosts[3].y == orangeY,
-                 "Red, Pink, and Cyan move while Orange remains stationary");
+                 game.ghosts[3].x == 256 && game.ghosts[3].y >= 224 && game.ghosts[3].y <= 240 &&
+                 game.ghosts[3].speed == 1,
+                 "Red, Pink, Cyan, and Orange each retain independent fixed-step movement state");
     return ok;
 }
 
@@ -1206,7 +1609,7 @@ bool test_ghost_layout_and_collision() {
     ok &= expect(game.ghosts[0].active && game.ghosts[1].active &&
                  game.ghosts[2].active && game.ghosts[3].active &&
                  game.ghosts[0].collisionActive && !game.ghosts[1].collisionActive &&
-                 !game.ghosts[2].collisionActive && game.ghosts[3].collisionActive,
+                 !game.ghosts[2].collisionActive && !game.ghosts[3].collisionActive,
                  "all four ghosts are rendered with house ghosts collision-gated");
     ok &= expect(level_cell(game.level, 11, 13) == CellType::GhostHouse &&
                  level_cell(game.level, 14, 14) == CellType::GhostHouse,
@@ -1393,9 +1796,6 @@ bool test_cyan_reset_lifecycle() {
     bool ok = true;
     GameState game{};
     game_initialize(&game);
-    const int orangeX = game.ghosts[3].x;
-    const int orangeY = game.ghosts[3].y;
-    const Direction orangeDirection = game.ghosts[3].direction;
     place_stationary_collision(&game, GhostKind::Cyan);
     game_update(&game);
     for (uint32_t step = 0; step < kPacManDeathDurationSteps; ++step) game_update(&game);
@@ -1405,9 +1805,11 @@ bool test_cyan_reset_lifecycle() {
                  game.ghosts[2].releaseState == GhostReleaseState::CyanHouseBounce &&
                  !game.ghosts[2].collisionActive,
                  "Cyan resets to the historical house release state after death");
-    ok &= expect(game.ghosts[3].x == orangeX && game.ghosts[3].y == orangeY &&
-                 game.ghosts[3].direction == orangeDirection,
-                 "Orange position and direction survive ordinary death reset");
+    ok &= expect(game.ghosts[3].x == 256 && game.ghosts[3].y == 224 &&
+                 game.ghosts[3].direction == Direction::Up &&
+                 game.ghosts[3].releaseState == GhostReleaseState::OrangeHouseBounce &&
+                 game.ghosts[3].speed == 1 && !game.ghosts[3].collisionActive,
+                 "Orange resets to its historical house release state after death");
 
     game_reset_level(&game);
     ok &= expect(game.levelNumber == 2 && game.ghosts[2].releaseState == GhostReleaseState::CyanHouseBounce &&
@@ -1420,10 +1822,10 @@ bool test_cyan_reset_lifecycle() {
                  game.ghosts[2].direction == Direction::Down,
                  "Cyan release state resets after Game Over restart");
     ok &= expect(game.ghosts[3].x == 256 && game.ghosts[3].y == 224 &&
-                 game.ghosts[3].direction == Direction::Up &&
-                 game.ghosts[3].releaseState == GhostReleaseState::Normal &&
-                 game.ghosts[3].speed == 0,
-                 "Orange remains stationary across level and session resets");
+                  game.ghosts[3].direction == Direction::Up &&
+                  game.ghosts[3].releaseState == GhostReleaseState::OrangeHouseBounce &&
+                  game.ghosts[3].speed == 1 && !game.ghosts[3].collisionActive,
+                  "Orange release state resets across level and session resets");
     return ok;
 }
 
@@ -1544,6 +1946,11 @@ int main() {
     ok &= test_pink_direction_selection_and_tunnels();
     ok &= test_cyan_target_and_release_state();
     ok &= test_cyan_direction_selection_and_tunnels();
+    ok &= test_orange_target_and_release_state();
+    ok &= test_orange_release_and_movement();
+    ok &= test_orange_direction_selection_and_tunnels();
+    ok &= test_orange_collisions_and_state_gates();
+    ok &= test_orange_reset_lifecycle_and_four_ghost_update();
     ok &= test_pink_collisions_and_state_gates();
     ok &= test_pink_reset_lifecycle_and_stationary_companions();
     ok &= test_counts_and_layout();

@@ -1,0 +1,18 @@
+# ninja log v7
+4	86	8067308680186774	native-objects/bitmap_loader.o	ef90a85b2c7c480f
+4	86	8067308680186774	D:/dev/pacman/guidexos/build-orange-validation/native-objects/bitmap_loader.o	ef90a85b2c7c480f
+11	130	8067308680584841	native-objects/game.o	37094bee7e9f730c
+11	130	8067308680584841	D:/dev/pacman/guidexos/build-orange-validation/native-objects/game.o	37094bee7e9f730c
+87	175	8067308681039712	native-objects/level.o	abf8f1ed7a51317f
+87	175	8067308681039712	D:/dev/pacman/guidexos/build-orange-validation/native-objects/level.o	abf8f1ed7a51317f
+130	225	8067308681574693	native-objects/main.o	22004d51af15069e
+130	225	8067308681574693	D:/dev/pacman/guidexos/build-orange-validation/native-objects/main.o	22004d51af15069e
+175	253	8067308681733965	native-objects/renderer.o	4dca43aed43b8c28
+175	253	8067308681733965	D:/dev/pacman/guidexos/build-orange-validation/native-objects/renderer.o	4dca43aed43b8c28
+253	319	8067308682521867	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	6eeebc1ea4f98d15
+319	606	8067308682521867	CMakeFiles/pacman-danger-validation.util	70e7bc84eb1d8841
+3	169	8067311362690261	CMakeFiles/pacman-danger-validation.util	70e7bc84eb1d8841
+4	90	8067314462311402	native-objects/main.o	22004d51af15069e
+4	90	8067314462311402	D:/dev/pacman/guidexos/build-orange-validation/native-objects/main.o	22004d51af15069e
+90	155	8067314462945998	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	6eeebc1ea4f98d15
+155	325	8067314463106924	CMakeFiles/pacman-danger-validation.util	70e7bc84eb1d8841

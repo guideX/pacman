@@ -53,7 +53,10 @@ enum class GhostReleaseState : uint8_t {
     PinkToCenter,
     PinkExiting,
     CyanHouseBounce,
-    CyanExiting
+    CyanExiting,
+    OrangeHouseBounce,
+    OrangeToCenter,
+    OrangeExiting
 };
 
 struct GhostState {
@@ -102,6 +105,9 @@ struct GameState {
     bool pinkReleaseCompleted;
     bool cyanReleaseStarted;
     bool cyanReleaseCompleted;
+    bool orangeTunnelWrapped;
+    bool orangeReleaseStarted;
+    bool orangeReleaseCompleted;
     bool normalPillConsumed;
     bool powerPillConsumed;
     bool scoreChanged;
