@@ -47,6 +47,50 @@ static uint32_t g_backgroundPixels[kPacManWidth * kPacManFrameHeight];
 static uint32_t g_framePixels[kPacManWidth * kPacManFrameHeight];
 static uint64_t g_frameSequence = 0;
 
+#if PACMAN_ENABLE_DIAGNOSTICS
+static uint32_t g_pacbmTickMarkers = 0;
+static uint32_t g_pacbmPollMarkers = 0;
+static uint32_t g_pacbmUpdateMarkers = 0;
+static uint32_t g_pacbmFrameMarkers = 0;
+
+static void pacbm_marker(gx_app_context* ctx, const char* marker) {
+    if (!ctx || !ctx->host || !ctx->host->log || !marker) return;
+    // Pass the read-only literal directly through the ABI.  Keeping the
+    // breadcrumb out of a temporary application-stack buffer makes the
+    // diagnostic path independent of the Native ELF stack boundary it is
+    // measuring.
+    ctx->host->log(ctx, marker);
+}
+
+static uint64_t pacbm_get_ticks_ms(gx_app_context* ctx) {
+    const bool trace = g_pacbmTickMarkers < 10u;
+    if (trace) pacbm_marker(ctx, "PACBM 12 GET_TICKS_BEGIN");
+    const uint64_t value = gx_get_ticks_ms(ctx);
+    if (trace) {
+        pacbm_marker(ctx, "PACBM 13 GET_TICKS_END");
+        ++g_pacbmTickMarkers;
+    }
+    return value;
+}
+
+static gx_result pacbm_poll_event(gx_app_context* ctx, gx_event* event, int timeoutMs) {
+    const bool trace = g_pacbmPollMarkers < 5u;
+    if (trace) pacbm_marker(ctx, "PACBM 14 POLL_EVENT_BEGIN");
+    const gx_result result = ctx->host->poll_event(ctx, event, timeoutMs);
+    if (trace) {
+        pacbm_marker(ctx, "PACBM 15 POLL_EVENT_END");
+        ++g_pacbmPollMarkers;
+    }
+    return result;
+}
+#else
+static void pacbm_marker(gx_app_context*, const char*) { }
+static uint64_t pacbm_get_ticks_ms(gx_app_context* ctx) { return gx_get_ticks_ms(ctx); }
+static gx_result pacbm_poll_event(gx_app_context* ctx, gx_event* event, int timeoutMs) {
+    return ctx->host->poll_event(ctx, event, timeoutMs);
+}
+#endif
+
 static const uint64_t kFixedStepMs = 10u;
 static const uint64_t kMaxElapsedMs = 250u;
 static const uint32_t kMaxCatchUpSteps = 8u;
@@ -174,9 +218,24 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
 static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacImage& sprites,
                               const GameState& game) {
     const uint64_t frameSequence = ++g_frameSequence;
+#if PACMAN_ENABLE_DIAGNOSTICS
+    const bool traceFrame = g_pacbmFrameMarkers < 3u;
+    if (traceFrame) pacbm_marker(ctx, "PACBM 18 NEXT_FRAME_BEGIN");
+#endif
     if (!render_game_scene(&sprites, &game, g_backgroundPixels, g_framePixels,
                            kPacManWidth * kPacManFrameHeight, frameSequence)) return false;
+#if PACMAN_ENABLE_DIAGNOSTICS
+    if (frameSequence == 1u) pacbm_marker(ctx, "PACBM 08 FIRST_FRAME_COMPOSED");
+    if (frameSequence == 1u) pacbm_marker(ctx, "PACBM 09 FIRST_FRAME_CALL_BEGIN");
+#endif
     const gx_result result = present(ctx, window);
+#if PACMAN_ENABLE_DIAGNOSTICS
+    if (frameSequence == 1u) pacbm_marker(ctx, "PACBM 10 FIRST_FRAME_CALL_END");
+    if (traceFrame) {
+        pacbm_marker(ctx, "PACBM 19 NEXT_FRAME_END");
+        ++g_pacbmFrameMarkers;
+    }
+#endif
 #if PACMAN_HOSTED_DANGER_TEST
     log_validation_frame(ctx, window, game, frameSequence, result);
 #endif
@@ -429,11 +488,16 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
     PacImage level{};
     PacImage sprites{};
-    if (!load_gximg(ctx, "resources/level1.gximg", g_levelPixels, kPacManWidth * kPacManMazeHeight, &level) ||
-        !load_gximg(ctx, "resources/pacpics.gximg", g_spritePixels, 256u * 352u, &sprites)) {
+    if (!load_gximg(ctx, "resources/level1.gximg", g_levelPixels, kPacManWidth * kPacManMazeHeight, &level)) {
         ctx->host->log(ctx, "PacMan resource load failed");
         return GX_ERROR_FAILED;
     }
+    pacbm_marker(ctx, "PACBM 05 LEVEL_RESOURCE_LOADED");
+    if (!load_gximg(ctx, "resources/pacpics.gximg", g_spritePixels, 256u * 352u, &sprites)) {
+        ctx->host->log(ctx, "PacMan resource load failed");
+        return GX_ERROR_FAILED;
+    }
+    pacbm_marker(ctx, "PACBM 06 SPRITE_RESOURCE_LOADED");
     ctx->host->log(ctx, "PacMan resources loaded");
     if (!level.pixels) {
         ctx->host->log(ctx, "PacMan background invariant failed: level pixels null");
@@ -548,6 +612,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         ctx->host->log(ctx, "PacMan window creation failed");
         return windowResult;
     }
+    pacbm_marker(ctx, "PACBM 07 WINDOW_CREATED");
     ctx->host->log(ctx, "PacMan initial frame render begin");
     if (!render_and_present(ctx, window, sprites, game)) {
         ctx->host->log(ctx, "PacMan frame presentation failed");
@@ -557,7 +622,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     game.visualDirty = false;
     ctx->host->log(ctx, "PacMan interactive frame presented");
 
-    uint64_t previousTicks = gx_get_ticks_ms(ctx);
+    pacbm_marker(ctx, "PACBM 11 MAIN_LOOP_ENTER");
+    uint64_t previousTicks = pacbm_get_ticks_ms(ctx);
     uint64_t lastPresentedTicks = previousTicks;
     uint64_t accumulatorMs = 0;
     bool running = true;
@@ -578,13 +644,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     while (running) {
         gx_event event;
         clear_event(&event);
-        gx_result eventResult = ctx->host->poll_event(ctx, &event, 10);
+        gx_result eventResult = pacbm_poll_event(ctx, &event, 10);
         if (eventResult == GX_OK && event.window == window) {
             if (gx_event_is_paint(&event)) {
                 if (game.visualDirty) {
                     if (!render_and_present(ctx, window, sprites, game)) running = false;
                     game.visualDirty = false;
-                    lastPresentedTicks = gx_get_ticks_ms(ctx);
+                    lastPresentedTicks = pacbm_get_ticks_ms(ctx);
                 }
             } else if (gx_event_is_close(&event)) {
                 ctx->host->log(ctx, "PacMan close event received");
@@ -625,7 +691,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
         if (!running) break;
 
-        const uint64_t currentTicks = gx_get_ticks_ms(ctx);
+        const uint64_t currentTicks = pacbm_get_ticks_ms(ctx);
         uint64_t elapsedMs = currentTicks - previousTicks;
         previousTicks = currentTicks;
         if (elapsedMs > kMaxElapsedMs) {
@@ -750,7 +816,17 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                                               &hostedPowerPillMovementWarmupSteps,
                                               &hostedPowerPillExpirationArmed);
 #endif
+#if PACMAN_ENABLE_DIAGNOSTICS
+            const bool traceUpdate = g_pacbmUpdateMarkers < 5u;
+            if (traceUpdate) pacbm_marker(ctx, "PACBM 16 UPDATE_BEGIN");
+#endif
             game_update(&game);
+#if PACMAN_ENABLE_DIAGNOSTICS
+            if (traceUpdate) {
+                pacbm_marker(ctx, "PACBM 17 UPDATE_END");
+                ++g_pacbmUpdateMarkers;
+            }
+#endif
             accumulatorMs -= kFixedStepMs;
             ++updates;
             if (!simulationStartedLogged) {
@@ -781,6 +857,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         }
     }
 
-    if (ctx->host->exit) return ctx->host->exit(ctx, GX_OK);
+    if (ctx->host->exit) {
+        pacbm_marker(ctx, "PACBM 20 EXIT_REQUESTED");
+        return ctx->host->exit(ctx, GX_OK);
+    }
     return GX_OK;
 }

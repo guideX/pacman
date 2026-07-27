@@ -20,7 +20,16 @@ set(GUIDEXOS_LOCAL_BIN_DIR "${GUIDEXOS_APP_ROOT}/bin/${GUIDEXOS_APP_ARCH}")
 
 set(GUIDEXOS_CLANG "C:/Program Files/LLVM/bin/clang++.exe" CACHE FILEPATH "LLVM clang++ used for the freestanding ELF objects")
 set(GUIDEXOS_LLD "C:/Program Files/LLVM/bin/ld.lld.exe" CACHE FILEPATH "LLVM lld used for the freestanding ELF link")
-option(PACMAN_ENABLE_DIAGNOSTICS "Enable gated Native ELF gameplay diagnostics" ON)
+# Native ELF code executes with interrupts enabled on the application stack.
+# The SysV red zone is therefore not safe unless interrupt entry switches to a
+# separate stack.  guideXOS currently does not make that switch, so every
+# freestanding amd64 Native ELF object must be compiled without the red zone.
+set(GUIDEXOS_NATIVE_CXX_FLAGS -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -mno-red-zone)
+# Gameplay diagnostics call the Native ELF host log ABI.  Keep them opt-in for
+# production: the bare-metal serial backend is synchronous, so per-update
+# logging can starve the desktop while the app is running.  Runtime lifecycle
+# and fault breadcrumbs remain enabled in the server boundary independently.
+option(PACMAN_ENABLE_DIAGNOSTICS "Enable gated Native ELF gameplay diagnostics" OFF)
 option(PACMAN_HOSTED_DANGER_TEST "Enable test-only automatic Red overlap for hosted danger validation" OFF)
 option(PACMAN_HOSTED_RED_MOVEMENT_TEST "Enable isolated hosted Red movement validation without forced collisions" OFF)
 option(PACMAN_HOSTED_PINK_MOVEMENT_TEST "Enable isolated hosted Pink movement validation without forced collisions" OFF)
@@ -103,27 +112,27 @@ set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUID
 
 add_custom_command(OUTPUT "${GUIDEXOS_MAIN_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} ${PACMAN_POWER_PILL_TEST_DEFINITION} -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} ${PACMAN_POWER_PILL_TEST_DEFINITION} ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
     DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/bitmap_loader.h src/renderer.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_GAME_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/game.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_GAME_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/game.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_GAME_OBJECT}"
     DEPENDS src/game.cpp src/game.h src/game_state.h src/level.h src/game_types.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_LEVEL_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/level.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LEVEL_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/level.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LEVEL_OBJECT}"
     DEPENDS src/level.cpp src/level.h src/game_state.h src/game_types.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_RENDERER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DANGER_TEST_DEFINITION} -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/renderer.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_RENDERER_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DANGER_TEST_DEFINITION} ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/renderer.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_RENDERER_OBJECT}"
     DEPENDS src/renderer.cpp src/game.h src/game_types.h src/game_state.h src/renderer.h src/level.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_LOADER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -c "${GUIDEXOS_APP_ROOT}/src/bitmap_loader.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LOADER_OBJECT}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/bitmap_loader.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LOADER_OBJECT}"
     DEPENDS src/bitmap_loader.cpp src/bitmap_loader.h src/game_types.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_ELF}"

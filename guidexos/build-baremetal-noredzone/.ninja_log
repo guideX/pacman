@@ -1,0 +1,13 @@
+# ninja log v7
+3	127	8068198064200378	native-objects/bitmap_loader.o	8e01e95b82d26a6b
+3	127	8068198064200378	D:/dev/pacman/guidexos/build-baremetal-noredzone/native-objects/bitmap_loader.o	8e01e95b82d26a6b
+14	185	8068198064829727	native-objects/game.o	8de4faba08c80076
+14	185	8068198064829727	D:/dev/pacman/guidexos/build-baremetal-noredzone/native-objects/game.o	8de4faba08c80076
+127	218	8068198065162566	native-objects/level.o	4f4fff5837ae48d8
+127	218	8068198065162566	D:/dev/pacman/guidexos/build-baremetal-noredzone/native-objects/level.o	4f4fff5837ae48d8
+185	278	8068198065771485	native-objects/main.o	df45ba58ecaed2f5
+185	278	8068198065771485	D:/dev/pacman/guidexos/build-baremetal-noredzone/native-objects/main.o	df45ba58ecaed2f5
+218	303	8068198066014298	native-objects/renderer.o	8aceb0d7b656e9c
+218	303	8068198066014298	D:/dev/pacman/guidexos/build-baremetal-noredzone/native-objects/renderer.o	8aceb0d7b656e9c
+303	385	8068198066854979	D:/dev/pacman/guidexos/bin/amd64/pacman.elf	a5ab7132377e38c
+385	620	8068198066907724	CMakeFiles/pacman-native.util	49b5dffadc19bb8c
