@@ -39,7 +39,7 @@ cmake_ninja_workdir = D$:/dev/pacman/guidexos/build-baremetal/
 #############################################
 # Utility command for pacman-native
 
-build CMakeFiles/pacman-native.util: CUSTOM_COMMAND CMakeFiles/pacman-native D$:/dev/pacman/guidexos/bin/amd64/pacman.elf native-objects/bitmap_loader.o native-objects/game.o native-objects/level.o native-objects/main.o native-objects/renderer.o
+build CMakeFiles/pacman-native.util: CUSTOM_COMMAND CMakeFiles/pacman-native D$:/dev/pacman/guidexos/bin/amd64/pacman.elf native-objects/bitmap_loader.o native-objects/game.o native-objects/level.o native-objects/level_rules.o native-objects/main.o native-objects/renderer.o
   COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/Apps/PacMan/bin/amd64 && C:\mingw64\bin\cmake.exe -E make_directory D:/Apps/PacMan/resources && C:\mingw64\bin\cmake.exe -E copy_if_different D:/dev/pacman/guidexos/bin/amd64/pacman.elf D:/Apps/PacMan/bin/amd64/pacman.elf && C:\mingw64\bin\cmake.exe -E copy_if_different D:/dev/pacman/guidexos/app.json D:/Apps/PacMan/app.json && C:\mingw64\bin\cmake.exe -E copy_if_different D:/dev/pacman/guidexos/resources/generated/level1.gximg D:/Apps/PacMan/resources/level1.gximg && C:\mingw64\bin\cmake.exe -E copy_if_different D:/dev/pacman/guidexos/resources/generated/pacpics.gximg D:/Apps/PacMan/resources/pacpics.gximg"
   DESC = Staging guideXOS PacMan package under the hosted /Apps package root
   restat = 1
@@ -79,6 +79,14 @@ build CMakeFiles/pacman-game-tests.dir/src/level.cpp.obj: CXX_COMPILER__pacman-g
   OBJECT_FILE_DIR = CMakeFiles\pacman-game-tests.dir\src
   TARGET_SUPPORT_DIR = CMakeFiles\pacman-game-tests.dir
 
+build CMakeFiles/pacman-game-tests.dir/src/level_rules.cpp.obj: CXX_COMPILER__pacman-game-tests_unscanned_ D$:/dev/pacman/guidexos/src/level_rules.cpp || cmake_object_order_depends_target_pacman-game-tests
+  DEP_FILE = CMakeFiles\pacman-game-tests.dir\src\level_rules.cpp.obj.d
+  FLAGS = -std=c++11
+  INCLUDES = -ID:/dev/guideXOSServer/sdk/include -ID:/dev/pacman/guidexos/src
+  OBJECT_DIR = CMakeFiles\pacman-game-tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\pacman-game-tests.dir\src
+  TARGET_SUPPORT_DIR = CMakeFiles\pacman-game-tests.dir
+
 build CMakeFiles/pacman-game-tests.dir/src/renderer.cpp.obj: CXX_COMPILER__pacman-game-tests_unscanned_ D$:/dev/pacman/guidexos/src/renderer.cpp || cmake_object_order_depends_target_pacman-game-tests
   DEP_FILE = CMakeFiles\pacman-game-tests.dir\src\renderer.cpp.obj.d
   FLAGS = -std=c++11
@@ -95,7 +103,7 @@ build CMakeFiles/pacman-game-tests.dir/src/renderer.cpp.obj: CXX_COMPILER__pacma
 #############################################
 # Link the executable pacman-game-tests.exe
 
-build pacman-game-tests.exe: CXX_EXECUTABLE_LINKER__pacman-game-tests_ CMakeFiles/pacman-game-tests.dir/tests/game_logic_test.cpp.obj CMakeFiles/pacman-game-tests.dir/src/game.cpp.obj CMakeFiles/pacman-game-tests.dir/src/level.cpp.obj CMakeFiles/pacman-game-tests.dir/src/renderer.cpp.obj
+build pacman-game-tests.exe: CXX_EXECUTABLE_LINKER__pacman-game-tests_ CMakeFiles/pacman-game-tests.dir/tests/game_logic_test.cpp.obj CMakeFiles/pacman-game-tests.dir/src/game.cpp.obj CMakeFiles/pacman-game-tests.dir/src/level.cpp.obj CMakeFiles/pacman-game-tests.dir/src/level_rules.cpp.obj CMakeFiles/pacman-game-tests.dir/src/renderer.cpp.obj
   LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\pacman-game-tests.dir
   POST_BUILD = cd .
@@ -138,8 +146,8 @@ build CMakeFiles/pacman-native | ${cmake_ninja_workdir}CMakeFiles/pacman-native:
 #############################################
 # Custom command for D:\dev\pacman\guidexos\bin\amd64\pacman.elf
 
-build D$:/dev/pacman/guidexos/bin/amd64/pacman.elf: CUSTOM_COMMAND native-objects/main.o native-objects/game.o native-objects/level.o native-objects/renderer.o native-objects/bitmap_loader.o
-  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/bin/amd64 && "C:\Program Files\LLVM\bin\ld.lld.exe" -m elf_x86_64 -static -e gx_main D:/dev/pacman/guidexos/build-baremetal/native-objects/main.o D:/dev/pacman/guidexos/build-baremetal/native-objects/game.o D:/dev/pacman/guidexos/build-baremetal/native-objects/level.o D:/dev/pacman/guidexos/build-baremetal/native-objects/renderer.o D:/dev/pacman/guidexos/build-baremetal/native-objects/bitmap_loader.o -o D:/dev/pacman/guidexos/bin/amd64/pacman.elf"
+build D$:/dev/pacman/guidexos/bin/amd64/pacman.elf: CUSTOM_COMMAND native-objects/main.o native-objects/game.o native-objects/level.o native-objects/level_rules.o native-objects/renderer.o native-objects/bitmap_loader.o
+  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/bin/amd64 && "C:\Program Files\LLVM\bin\ld.lld.exe" -m elf_x86_64 -static -e gx_main D:/dev/pacman/guidexos/build-baremetal/native-objects/main.o D:/dev/pacman/guidexos/build-baremetal/native-objects/game.o D:/dev/pacman/guidexos/build-baremetal/native-objects/level.o D:/dev/pacman/guidexos/build-baremetal/native-objects/level_rules.o D:/dev/pacman/guidexos/build-baremetal/native-objects/renderer.o D:/dev/pacman/guidexos/build-baremetal/native-objects/bitmap_loader.o -o D:/dev/pacman/guidexos/bin/amd64/pacman.elf"
   DESC = Linking genuine static amd64 Native ELF
   restat = 1
 
@@ -156,7 +164,7 @@ build native-objects/bitmap_loader.o | ${cmake_ninja_workdir}native-objects/bitm
 #############################################
 # Custom command for native-objects\game.o
 
-build native-objects/game.o | ${cmake_ninja_workdir}native-objects/game.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/game.cpp D$:/dev/pacman/guidexos/src/game.h D$:/dev/pacman/guidexos/src/game_state.h D$:/dev/pacman/guidexos/src/level.h D$:/dev/pacman/guidexos/src/game_types.h
+build native-objects/game.o | ${cmake_ninja_workdir}native-objects/game.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/game.cpp D$:/dev/pacman/guidexos/src/game.h D$:/dev/pacman/guidexos/src/game_state.h D$:/dev/pacman/guidexos/src/level.h D$:/dev/pacman/guidexos/src/level_rules.h D$:/dev/pacman/guidexos/src/game_types.h
   COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/build-baremetal/native-objects && "C:\Program Files\LLVM\bin\clang++.exe" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -mno-red-zone -c D:/dev/pacman/guidexos/src/game.cpp -I"D:/dev/guideXOSServer/sdk/include" -I"D:/dev/pacman/guidexos/src" -o D:/dev/pacman/guidexos/build-baremetal/native-objects/game.o"
   DESC = Generating native-objects/game.o
   restat = 1
@@ -172,10 +180,19 @@ build native-objects/level.o | ${cmake_ninja_workdir}native-objects/level.o: CUS
 
 
 #############################################
+# Custom command for native-objects\level_rules.o
+
+build native-objects/level_rules.o | ${cmake_ninja_workdir}native-objects/level_rules.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/level_rules.cpp D$:/dev/pacman/guidexos/src/level_rules.h
+  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/build-baremetal/native-objects && "C:\Program Files\LLVM\bin\clang++.exe" --target=x86_64-unknown-elf -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -mno-red-zone -c D:/dev/pacman/guidexos/src/level_rules.cpp -I"D:/dev/guideXOSServer/sdk/include" -I"D:/dev/pacman/guidexos/src" -o D:/dev/pacman/guidexos/build-baremetal/native-objects/level_rules.o"
+  DESC = Generating native-objects/level_rules.o
+  restat = 1
+
+
+#############################################
 # Custom command for native-objects\main.o
 
-build native-objects/main.o | ${cmake_ninja_workdir}native-objects/main.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/main.cpp D$:/dev/pacman/guidexos/src/game_types.h D$:/dev/pacman/guidexos/src/game_state.h D$:/dev/pacman/guidexos/src/game.h D$:/dev/pacman/guidexos/src/bitmap_loader.h D$:/dev/pacman/guidexos/src/renderer.h
-  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/build-baremetal/native-objects && "C:\Program Files\LLVM\bin\clang++.exe" --target=x86_64-unknown-elf -DPACMAN_ENABLE_DIAGNOSTICS=0 -DPACMAN_HOSTED_DANGER_TEST=0 -DPACMAN_HOSTED_RED_MOVEMENT_TEST=0 -DPACMAN_HOSTED_PINK_MOVEMENT_TEST=0 -DPACMAN_HOSTED_CYAN_MOVEMENT_TEST=0 -DPACMAN_HOSTED_ORANGE_MOVEMENT_TEST=0 -DPACMAN_HOSTED_POWER_PILL_TEST=0 -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -mno-red-zone -c D:/dev/pacman/guidexos/src/main.cpp -I"D:/dev/guideXOSServer/sdk/include" -I"D:/dev/pacman/guidexos/src" -o D:/dev/pacman/guidexos/build-baremetal/native-objects/main.o"
+build native-objects/main.o | ${cmake_ninja_workdir}native-objects/main.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/main.cpp D$:/dev/pacman/guidexos/src/game_types.h D$:/dev/pacman/guidexos/src/game_state.h D$:/dev/pacman/guidexos/src/game.h D$:/dev/pacman/guidexos/src/level_rules.h D$:/dev/pacman/guidexos/src/bitmap_loader.h D$:/dev/pacman/guidexos/src/renderer.h
+  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/build-baremetal/native-objects && "C:\Program Files\LLVM\bin\clang++.exe" --target=x86_64-unknown-elf -DPACMAN_ENABLE_DIAGNOSTICS=0 -DPACMAN_HOSTED_DANGER_TEST=0 -DPACMAN_HOSTED_RED_MOVEMENT_TEST=0 -DPACMAN_HOSTED_PINK_MOVEMENT_TEST=0 -DPACMAN_HOSTED_CYAN_MOVEMENT_TEST=0 -DPACMAN_HOSTED_ORANGE_MOVEMENT_TEST=0 -DPACMAN_HOSTED_POWER_PILL_TEST=0 -DPACMAN_HOSTED_LEVEL_TEST=0 -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -mno-red-zone -c D:/dev/pacman/guidexos/src/main.cpp -I"D:/dev/guideXOSServer/sdk/include" -I"D:/dev/pacman/guidexos/src" -o D:/dev/pacman/guidexos/build-baremetal/native-objects/main.o"
   DESC = Generating native-objects/main.o
   restat = 1
 
@@ -183,7 +200,7 @@ build native-objects/main.o | ${cmake_ninja_workdir}native-objects/main.o: CUSTO
 #############################################
 # Custom command for native-objects\renderer.o
 
-build native-objects/renderer.o | ${cmake_ninja_workdir}native-objects/renderer.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/renderer.cpp D$:/dev/pacman/guidexos/src/game.h D$:/dev/pacman/guidexos/src/game_types.h D$:/dev/pacman/guidexos/src/game_state.h D$:/dev/pacman/guidexos/src/renderer.h D$:/dev/pacman/guidexos/src/level.h
+build native-objects/renderer.o | ${cmake_ninja_workdir}native-objects/renderer.o: CUSTOM_COMMAND D$:/dev/pacman/guidexos/src/renderer.cpp D$:/dev/pacman/guidexos/src/game.h D$:/dev/pacman/guidexos/src/game_types.h D$:/dev/pacman/guidexos/src/game_state.h D$:/dev/pacman/guidexos/src/renderer.h D$:/dev/pacman/guidexos/src/level.h D$:/dev/pacman/guidexos/src/level_rules.h
   COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D D:\dev\pacman\guidexos\build-baremetal && C:\mingw64\bin\cmake.exe -E make_directory D:/dev/pacman/guidexos/build-baremetal/native-objects && "C:\Program Files\LLVM\bin\clang++.exe" --target=x86_64-unknown-elf -DPACMAN_HOSTED_DANGER_TEST=0 -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -mno-red-zone -c D:/dev/pacman/guidexos/src/renderer.cpp -I"D:/dev/guideXOSServer/sdk/include" -I"D:/dev/pacman/guidexos/src" -o D:/dev/pacman/guidexos/build-baremetal/native-objects/renderer.o"
   DESC = Generating native-objects/renderer.o
   restat = 1

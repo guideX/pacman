@@ -32,6 +32,9 @@
 #ifndef PACMAN_HOSTED_POWER_PILL_TEST
 #define PACMAN_HOSTED_POWER_PILL_TEST 0
 #endif
+#ifndef PACMAN_HOSTED_LEVEL_TEST
+#define PACMAN_HOSTED_LEVEL_TEST 0
+#endif
 
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
@@ -210,6 +213,20 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_text(message, &index, sizeof(message), " orangeTargetMode=");
     append_frame_text(message, &index, sizeof(message),
                       orange_uses_far_target(game.pacman, game.ghosts[3]) ? "far" : "near");
+    const LevelRules rules = calculate_level_rules(game.levelNumber);
+    const uint32_t speed = sanitize_game_speed(game.gameSpeed);
+    append_frame_text(message, &index, sizeof(message), " pm=");
+    append_frame_number(message, &index, sizeof(message), rules.pacmanMovePixelsPerStep * speed);
+    append_frame_text(message, &index, sizeof(message), " ghost=");
+    append_frame_number(message, &index, sizeof(message), rules.normalGhostMovePixelsPerStep * speed);
+    append_frame_text(message, &index, sizeof(message), " fg=");
+    append_frame_number(message, &index, sizeof(message), rules.frightenedGhostMoveIntervalSteps);
+    append_frame_text(message, &index, sizeof(message), " pp=");
+    append_frame_number(message, &index, sizeof(message), game_frightened_duration_steps(game));
+    append_frame_text(message, &index, sizeof(message), " flash=");
+    append_frame_number(message, &index, sizeof(message), game_frightened_flash_threshold(game));
+    append_frame_text(message, &index, sizeof(message), " remaining=");
+    append_frame_number(message, &index, sizeof(message), game.level.totalConsumablesRemaining);
     message[index] = '\0';
     ctx->host->log(ctx, message);
 }
@@ -337,11 +354,22 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
         log_game_value(ctx, "PacMan remaining consumables: ", game.level.totalConsumablesRemaining);
     }
     if (game.countUnderflow) ctx->host->log(ctx, "PacMan consumable count underflow prevented");
-    if (game.levelCompleteEntered) ctx->host->log(ctx, "PacMan level complete");
+    if (game.levelCompleteEntered) {
+        ctx->host->log(ctx, "PacMan level complete");
+        log_game_value(ctx, "PacMan old level: ", game.levelNumber);
+        const LevelRules rules = calculate_level_rules(game.levelNumber);
+        log_game_value(ctx, "PacMan level rules PM pixels: ", rules.pacmanMovePixelsPerStep * sanitize_game_speed(game.gameSpeed));
+        log_game_value(ctx, "PacMan level rules ghost pixels: ", rules.normalGhostMovePixelsPerStep * sanitize_game_speed(game.gameSpeed));
+        log_game_value(ctx, "PacMan level rules frightened interval: ", rules.frightenedGhostMoveIntervalSteps);
+        log_game_value(ctx, "PacMan level rules frightened duration: ", game_frightened_duration_steps(game));
+        log_game_value(ctx, "PacMan level rules flash threshold: ", game_frightened_flash_threshold(game));
+    }
     if (game.levelReset) {
         log_game_value(ctx, "PacMan level reset: ", game.levelNumber);
         log_game_value(ctx, "PacMan remaining consumables: ", game.level.totalConsumablesRemaining);
     }
+    if (game.readyEntered) ctx->host->log(ctx, "PacMan Ready entered");
+    if (game.gameplayResumed) ctx->host->log(ctx, "PacMan gameplay resumed");
     if (game.collisionDetected) ctx->host->log(ctx, "PacMan ghost collision detected");
     if (game.deathEntered) ctx->host->log(ctx, "PacMan death state entered");
     if (game.lifeDecremented) log_game_value(ctx, "PacMan life decremented; lives remaining: ", game.lives);
@@ -476,6 +504,115 @@ static void apply_hosted_power_pill_test_step(GameState* game, bool* activated,
         game->suppressGhostCollisionsForValidation = true;
         *expirationArmed = true;
     }
+}
+#endif
+
+#if PACMAN_HOSTED_LEVEL_TEST
+static void hosted_level_test_set_consumable(GameState* game, bool powerPill) {
+    if (!game) return;
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        for (int column = 0; column < kPacManMazeColumns; ++column) {
+            if (game->level.cells[row][column] == CellType::Pill ||
+                game->level.cells[row][column] == CellType::PowerPill) {
+                game->level.cells[row][column] = CellType::Empty;
+            }
+        }
+    }
+    if (powerPill) {
+        game->level.cells[23][1] = CellType::PowerPill;
+        game->level.normalPillsRemaining = 0;
+        game->level.powerPillsRemaining = 1;
+        game->pacman.x = 24;
+        game->pacman.y = 360;
+        game->pacman.direction = Direction::Down;
+        game->pacman.facingDirection = Direction::Down;
+        game->pacman.requestedDirection = Direction::Down;
+    } else {
+        game->level.cells[1][2] = CellType::Pill;
+        game->level.normalPillsRemaining = 1;
+        game->level.powerPillsRemaining = 0;
+        game->pacman.x = 24;
+        game->pacman.y = 24;
+        game->pacman.direction = Direction::Right;
+        game->pacman.facingDirection = Direction::Right;
+        game->pacman.requestedDirection = Direction::Right;
+    }
+    game->level.totalConsumablesRemaining = 1;
+    game->pacman.offset = 0;
+    game->pacman.speed = 0;
+    game->suppressGhostCollisionsForValidation = true;
+    game->visualDirty = true;
+}
+
+static bool prepare_hosted_level_test(GameState* game) {
+    static uint32_t preparedResetCount = 0xFFFFFFFFu;
+    static uint32_t targetHoldSteps = 0;
+    static bool targetArmed = false;
+    static uint32_t laterDeathPreparations = 0;
+    static uint32_t gameOverHoldSteps = 0;
+    static bool restartRequested = false;
+    if (!game) return false;
+    if (game->playState == PlayState::GameOver && !restartRequested) {
+        // The validation-only flow exercises restart through the same
+        // session-reset function used by the production Enter/Space path.
+        if (gameOverHoldSteps < 8u) {
+            ++gameOverHoldSteps;
+            return false;
+        }
+        restartRequested = game_restart_session(game);
+        return restartRequested;
+    }
+    if (restartRequested || game->playState != PlayState::Playing) return false;
+    // Two normal-pill completions prove 1 -> 2 -> 3.  The next completion is
+    // a level-8 power-pill transition, exercising the historical short timer
+    // without inventing a zero-duration level that Nexgen clamps away.
+    if (game->level.totalConsumablesRemaining == 244u && game->levelResetCount <= 3u &&
+        preparedResetCount != game->levelResetCount) {
+        if (game->levelResetCount == 3u) game->levelNumber = kPacManHistoricalMaximumLevel;
+        hosted_level_test_set_consumable(game, game->levelResetCount == 3u);
+        game->pacman.direction = Direction::None;
+        game->pacman.facingDirection = Direction::Right;
+        game->pacman.requestedDirection = Direction::None;
+        preparedResetCount = game->levelResetCount;
+        targetHoldSteps = 0;
+        targetArmed = true;
+        return true;
+    }
+    if (game->level.totalConsumablesRemaining == 1u && targetArmed) {
+        if (targetHoldSteps < 8u) {
+            ++targetHoldSteps;
+            return false;
+        }
+        const bool powerPill = preparedResetCount == 3u;
+        game->pacman.direction = powerPill ? Direction::Down : Direction::Right;
+        game->pacman.facingDirection = game->pacman.direction;
+        game->pacman.requestedDirection = game->pacman.direction;
+        game->pacman.speed = 0;
+        targetArmed = false;
+        return true;
+    }
+    if (game->levelNumber == kPacManHistoricalMaximumLevel && game->levelResetCount >= 4u &&
+        game->level.totalConsumablesRemaining == 244u && laterDeathPreparations < 3u) {
+        // Later-level death/Game Over coverage is validation-only. Put
+        // Pac-Man on Red's current tile and let normal collision resolution
+        // enter Dying; no production timing or collision path is changed.
+        game->pacman.x = game->ghosts[0].x;
+        game->pacman.y = game->ghosts[0].y;
+        game->pacman.direction = Direction::None;
+        game->pacman.facingDirection = Direction::None;
+        game->pacman.requestedDirection = Direction::None;
+        game->pacman.offset = 0;
+        game->pacman.speed = 0;
+        game->ghosts[0].condition = GhostCondition::Normal;
+        game->ghosts[0].collisionActive = true;
+        game->ghosts[0].active = true;
+        game->ghosts[0].offset = 0;
+        game->ghosts[0].speed = 0;
+        game->suppressGhostCollisionsForValidation = false;
+        ++laterDeathPreparations;
+        return true;
+    }
+    return false;
 }
 #endif
 
@@ -815,6 +952,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             apply_hosted_power_pill_test_step(&game, &hostedPowerPillActivated,
                                               &hostedPowerPillMovementWarmupSteps,
                                               &hostedPowerPillExpirationArmed);
+#endif
+#if PACMAN_HOSTED_LEVEL_TEST
+            if (prepare_hosted_level_test(&game)) {
+                ctx->host->log(ctx, "PacMan hosted level transition trigger prepared");
+            }
 #endif
 #if PACMAN_ENABLE_DIAGNOSTICS
             const bool traceUpdate = g_pacbmUpdateMarkers < 5u;

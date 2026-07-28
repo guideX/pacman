@@ -32,18 +32,18 @@ static const int kOrangeTargetThresholdTiles = 4;
 static const int kOrangeProjectionTiles = 12;
 
 static uint32_t effective_game_speed(const GameState& game) {
-    return game.gameSpeed == 0 ? 1u : game.gameSpeed;
+    return sanitize_game_speed(game.gameSpeed);
 }
 
 static uint32_t frightened_duration_steps(const GameState& game) {
-    const uint32_t level = game.levelNumber > 8u ? 8u : game.levelNumber;
-    const uint32_t base = level >= 10u ? 0u : 1000u - level * 100u;
+    const LevelRules rules = calculate_level_rules(game.levelNumber);
     const uint32_t speed = effective_game_speed(game);
-    return base / speed;
+    return rules.frightenedDurationSteps / speed;
 }
 
 static uint32_t frightened_flash_threshold(const GameState& game) {
-    return 200u / effective_game_speed(game);
+    const LevelRules rules = calculate_level_rules(game.levelNumber);
+    return rules.frightenedFlashStartSteps / effective_game_speed(game);
 }
 
 static void clear_power_event_flags(GameState* game) {
@@ -127,7 +127,10 @@ static void reset_pacman(PacManState* pacman) {
     pacman->y = 376;
     pacman->direction = Direction::Right;
     pacman->facingDirection = Direction::Right;
-    pacman->requestedDirection = Direction::Right;
+    // The historical actor faces and starts moving right, but native buffered
+    // input is deliberately empty after a reset so a held key cannot leak
+    // across a death, level transition, or restart.
+    pacman->requestedDirection = Direction::None;
     pacman->offset = 8;
     pacman->speed = 1;
     pacman->mouth = 0;
@@ -217,8 +220,11 @@ static void reset_actor_positions(GameState* game) {
     if (!game) return;
     reset_pacman(&game->pacman);
     reset_ghosts(game->ghosts);
+    const LevelRules rules = calculate_level_rules(game->levelNumber);
+    const uint32_t speed = effective_game_speed(*game);
+    game->pacman.speed = static_cast<int>(rules.pacmanMovePixelsPerStep * speed);
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
-        game->ghosts[index].speed = static_cast<int>(effective_game_speed(*game));
+        game->ghosts[index].speed = static_cast<int>(rules.normalGhostMovePixelsPerStep * speed);
     }
     const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
     game->ghosts[1].targetX = pinkTarget.x;
@@ -269,6 +275,11 @@ static void activate_power_pill(GameState* game) {
     game->ghostEatChain = 0;
     game->powerPillEncounterReset = true;
     const uint32_t duration = frightened_duration_steps(*game);
+    // A defensive zero-duration result is a normal power-pill encounter, not
+    // a one-update frightened flash.  This branch is unreachable through the
+    // historical level clamp (level 8 is 200 ticks at normal speed), but it
+    // keeps manually supplied high-speed state safe and source-consistent.
+    if (duration == 0u) return;
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
         GhostState& ghost = game->ghosts[index];
         if (!ghost_can_receive_power_pill(ghost)) continue;
@@ -290,7 +301,8 @@ static void activate_power_pill(GameState* game) {
 
 static void restore_ghost_normal_speed(const GameState& game, GhostState* ghost) {
     if (!ghost) return;
-    ghost->speed = static_cast<int>(effective_game_speed(game));
+    const LevelRules rules = calculate_level_rules(game.levelNumber);
+    ghost->speed = static_cast<int>(rules.normalGhostMovePixelsPerStep * effective_game_speed(game));
 }
 
 static void enter_returning_house(GameState* game, GhostState* ghost) {
@@ -319,6 +331,24 @@ static void advance_power_pill_timer(GameState* game, GhostState* ghost) {
         ghost->condition = GhostCondition::Normal;
         game->ghostTimerExpired[static_cast<uint32_t>(ghost->kind)] = true;
         game->visualDirty = true;
+    }
+}
+
+static void clear_level_completion_combat_state(GameState* game) {
+    if (!game) return;
+    clear_held(&game->held);
+    game->pacman.direction = Direction::None;
+    game->pacman.requestedDirection = Direction::None;
+    game->ghostEatChain = 0;
+    game->frightenedFlashPhase = 0;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        GhostState& ghost = game->ghosts[index];
+        ghost.condition = GhostCondition::Normal;
+        ghost.powerPillStepsRemaining = 0;
+        ghost.frightenedDelayToggle = false;
+        restore_ghost_normal_speed(*game, &ghost);
+        if (ghost.releaseState == GhostReleaseState::Normal) ghost.collisionActive = true;
+        else ghost.collisionActive = false;
     }
 }
 
@@ -360,6 +390,10 @@ static void consume_target_pill(GameState* game) {
     }
 
     if (game->level.totalConsumablesRemaining == 0) {
+        // frmPacMan adds the level bonus in the same one-shot completion
+        // branch, before ResetLevel/DefaultPositions are called.
+        add_score(*game, kPacManLevelCompleteBonus);
+        clear_level_completion_combat_state(game);
         game->playState = PlayState::LevelComplete;
         game->levelCompleteStepsRemaining = kPacManLevelCompleteDelaySteps;
         ++game->levelCompleteTransitions;
@@ -698,8 +732,11 @@ static void update_active_ghost(GameState* game, GhostState* ghost,
         // basGhostAI.bas toggles DelayTime and suppresses every second
         // movement update while PPTimer is positive. The first frightened
         // update moves because the zero-initialized delay becomes one.
-        ghost->frightenedDelayToggle = !ghost->frightenedDelayToggle;
-        if (!ghost->frightenedDelayToggle) return;
+        const LevelRules rules = calculate_level_rules(game->levelNumber);
+        if (rules.frightenedGhostMoveIntervalSteps > 1u) {
+            ghost->frightenedDelayToggle = !ghost->frightenedDelayToggle;
+            if (!ghost->frightenedDelayToggle) return;
+        }
     }
 
     // Direction is selected only at an aligned tile center. The committed
@@ -1124,6 +1161,7 @@ static void update_ready_after_death(GameState* game) {
     if (game->readyStepsRemaining > 0) --game->readyStepsRemaining;
     if (game->readyStepsRemaining == 0) {
         game->playState = PlayState::Playing;
+        game->gameplayResumed = true;
         game->visualDirty = true;
     }
 }
@@ -1373,6 +1411,8 @@ void game_initialize(GameState* game) {
     game->actorReset = false;
     game->gameOverEntered = false;
     game->sessionRestarted = false;
+    game->readyEntered = false;
+    game->gameplayResumed = false;
     game->suppressGhostCollisionsForValidation = false;
     clear_power_event_flags(game);
     game->simulationSteps = 0;
@@ -1387,8 +1427,10 @@ void add_score(GameState& game, uint32_t points) {
 
 void game_reset_level(GameState* game) {
     if (!game) return;
+    const uint32_t oldLevel = normalize_level_number(game->levelNumber);
+    game->levelNumber = oldLevel < kPacManHistoricalMaximumLevel
+        ? oldLevel + 1u : kPacManHistoricalMaximumLevel;
     level_initialize(&game->level);
-    if (game->levelNumber != 0xFFFFFFFFu) ++game->levelNumber;
     reset_actor_positions(game);
     game->ghosts[0].targetX = game->pacman.x;
     game->ghosts[0].targetY = game->pacman.y;
@@ -1398,18 +1440,26 @@ void game_reset_level(GameState* game) {
     const GhostTarget cyanTarget = calculate_cyan_target(*game, game->pacman, game->ghosts[0]);
     game->ghosts[2].targetX = cyanTarget.x;
     game->ghosts[2].targetY = cyanTarget.y;
-    game->playState = PlayState::Playing;
+    game->playState = PlayState::ReadyAfterDeath;
     game->levelCompleteStepsRemaining = 0;
     game->deathStepsRemaining = 0;
-    game->readyStepsRemaining = 0;
+    game->readyStepsRemaining = calculate_level_rules(game->levelNumber).readyDurationSteps;
+    game->ghostEatChain = 0;
+    game->frightenedFlashPhase = 0;
+    clear_held(&game->held);
+    game->pacman.requestedDirection = Direction::None;
     game->visualDirty = true;
     game->levelReset = true;
+    game->actorReset = true;
+    game->readyEntered = true;
     game->powerPillEncounterReset = true;
     ++game->levelResetCount;
 }
 
 bool game_restart_session(GameState* game) {
     if (!game || game->playState != PlayState::GameOver) return false;
+    game->gameSpeed = 1;
+    game->levelNumber = 1;
     level_initialize(&game->level);
     reset_actor_positions(game);
     game->ghosts[0].targetX = game->pacman.x;
@@ -1418,15 +1468,13 @@ bool game_restart_session(GameState* game) {
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
-    game->levelNumber = 1;
-    game->gameSpeed = 1;
     game->ghostEatChain = 0;
     game->frightenedFlashPhase = 0;
     game->lives = kPacManInitialLives;
     game->playState = PlayState::ReadyAfterDeath;
     game->levelCompleteStepsRemaining = 0;
     game->deathStepsRemaining = 0;
-    game->readyStepsRemaining = kPacManReadyAfterDeathSteps;
+    game->readyStepsRemaining = calculate_level_rules(game->levelNumber).readyDurationSteps;
     game->deathAnimationFrame = 0;
     game->levelCompleteTransitions = 0;
     game->levelResetCount = 0;
@@ -1458,6 +1506,8 @@ bool game_restart_session(GameState* game) {
     game->lifeDecremented = false;
     game->actorReset = false;
     game->gameOverEntered = false;
+    game->readyEntered = true;
+    game->gameplayResumed = false;
     game->simulationSteps = 0;
     clear_power_event_flags(game);
     return true;
@@ -1527,6 +1577,8 @@ void game_update(GameState* game) {
     game->lifeDecremented = false;
     game->actorReset = false;
     game->gameOverEntered = false;
+    game->readyEntered = false;
+    game->gameplayResumed = false;
     clear_power_event_flags(game);
 
     if (!game->focused) return;

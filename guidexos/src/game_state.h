@@ -137,6 +137,8 @@ struct GameState {
     bool actorReset;
     bool gameOverEntered;
     bool sessionRestarted;
+    bool readyEntered;
+    bool gameplayResumed;
     bool suppressGhostCollisionsForValidation;
     bool powerPillEncounterReset;
     bool ghostReversalRequested[4];

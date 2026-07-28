@@ -1,5 +1,6 @@
 #include "game.h"
 #include "level.h"
+#include "level_rules.h"
 #include "renderer.h"
 
 #include <iostream>
@@ -1548,13 +1549,14 @@ bool test_final_power_pill_and_renderer() {
     game.pacman.speed = 0;
     game_update(&game);
     ok &= expect(game.powerPillConsumed && game.playState == PlayState::LevelComplete &&
-                 game.score == kPacManPowerPillScore && game.level.totalConsumablesRemaining == 0,
-                 "final power pill preserves completion precedence and base score");
+                 game.score == kPacManPowerPillScore + kPacManLevelCompleteBonus &&
+                 game.level.totalConsumablesRemaining == 0,
+                 "final power pill preserves completion precedence and historical level bonus");
     for (uint32_t step = 0; step < kPacManLevelCompleteDelaySteps; ++step) game_update(&game);
-    ok &= expect(game.playState == PlayState::Playing &&
+    ok &= expect(game.playState == PlayState::ReadyAfterDeath &&
                  game.ghosts[0].condition == GhostCondition::Normal &&
                  game.ghosts[0].powerPillStepsRemaining == 0,
-                 "level reset clears frightened state after final power pill");
+                 "level reset clears frightened state and enters Ready after final power pill");
 
     static uint32_t spritePixels[256u * 352u];
     static uint32_t backgroundPixels[kPacManWidth * kPacManFrameHeight];
@@ -1640,23 +1642,23 @@ bool test_completion_reset_and_overflow() {
                  "last consumable enters level-complete state");
     ok &= expect(game.levelCompleteTransitions == 1 && game.levelCompleteStepsRemaining == 100,
                  "completion transition and deterministic delay occur once");
-    ok &= expect(game.score == 1244 && game.level.totalConsumablesRemaining == 0,
-                 "last normal pill updates score and reaches zero");
+    ok &= expect(game.score == 2244 && game.level.totalConsumablesRemaining == 0,
+                 "last normal pill updates score, adds the historical level bonus, and reaches zero");
     for (uint32_t i = 0; i < 99; ++i) game_update(&game);
     ok &= expect(game.playState == PlayState::LevelComplete && game.levelResetCount == 0,
                  "completion delay keeps Pac-Man stopped");
     game_update(&game);
-    ok &= expect(game.playState == PlayState::Playing && game.levelResetCount == 1,
-                 "completion resets after one second");
-    ok &= expect(game.score == 1244, "level reset preserves score");
+    ok &= expect(game.playState == PlayState::ReadyAfterDeath && game.levelResetCount == 1,
+                 "completion resets after one second and enters Ready");
+    ok &= expect(game.score == 2244, "level reset preserves completed score");
     ok &= expect(game.levelNumber == 2, "level reset increments level");
     ok &= expect(game.level.normalPillsRemaining == 240 && game.level.powerPillsRemaining == 4 &&
                  game.level.totalConsumablesRemaining == 244,
                  "level reset restores exact consumable counts");
     ok &= expect(game.pacman.x == 224 && game.pacman.y == 376 &&
-                  game.pacman.direction == Direction::Right && game.pacman.offset == 8 &&
-                  game.pacman.requestedDirection == Direction::Right,
-                  "level reset restores Pac-Man start state");
+                   game.pacman.direction == Direction::Right && game.pacman.offset == 8 &&
+                   game.pacman.requestedDirection == Direction::None,
+                   "level reset restores Pac-Man start state");
     ok &= expect(game.ghosts[0].x == 224 && game.ghosts[0].y == 184 &&
                  game.ghosts[0].direction == Direction::Left && game.ghosts[0].targetX == 224 &&
                  game.ghosts[0].targetY == 376,
@@ -2287,6 +2289,116 @@ bool test_game_over_and_restart() {
     return ok;
 }
 
+bool test_level_rules_and_consecutive_progression() {
+    bool ok = true;
+
+    const LevelRules levelOne = calculate_level_rules(1u);
+    const LevelRules levelTwo = calculate_level_rules(2u);
+    const LevelRules midLevel = calculate_level_rules(4u);
+    const LevelRules highestLevel = calculate_level_rules(8u);
+    const LevelRules beyondTable = calculate_level_rules(9u);
+    const LevelRules veryHigh = calculate_level_rules(0xFFFFFFFFu);
+    const LevelRules zero = calculate_level_rules(0u);
+    ok &= expect(levelOne.level == 1u && levelOne.pacmanMovePixelsPerStep == 1u &&
+                 levelOne.normalGhostMovePixelsPerStep == 1u &&
+                 levelOne.frightenedGhostMoveIntervalSteps == 2u &&
+                 levelOne.frightenedDurationSteps == 900u &&
+                 levelOne.frightenedFlashStartSteps == 200u,
+                 "Level 1 uses fixed movement and 900/200 frightened rules");
+    ok &= expect(levelTwo.level == 2u && levelTwo.frightenedDurationSteps == 800u &&
+                 levelTwo.frightenedFlashStartSteps == 200u,
+                 "Level 2 reduces only the historical frightened duration");
+    ok &= expect(midLevel.level == 4u && midLevel.frightenedDurationSteps == 600u,
+                 "mid-level rule calculation is deterministic");
+    ok &= expect(highestLevel.level == 8u && highestLevel.frightenedDurationSteps == 200u,
+                 "highest explicit historical level uses 200 frightened ticks");
+    ok &= expect(beyondTable.level == 8u && beyondTable.frightenedDurationSteps == 200u &&
+                 veryHigh.level == 8u && veryHigh.frightenedDurationSteps == 200u &&
+                 zero.level == 1u,
+                 "levels beyond the historical table saturate without underflow");
+    ok &= expect(levelOne.frightenedDurationSteps != 0u && highestLevel.frightenedDurationSteps != 0u,
+                 "historical level clamp makes a zero-duration level unreachable");
+
+    GameState speedGame{};
+    game_initialize(&speedGame);
+    ok &= expect(speedGame.levelNumber == 1u && speedGame.pacman.speed == 1 &&
+                 speedGame.ghosts[0].speed == 1,
+                 "new sessions begin at level 1 with one-pixel movement");
+    speedGame.gameSpeed = 2u;
+    game_reset_level(&speedGame);
+    ok &= expect(speedGame.levelNumber == 2u && speedGame.pacman.speed == 2 &&
+                 speedGame.ghosts[0].speed == 2 &&
+                 game_frightened_duration_steps(speedGame) == 400u &&
+                 game_frightened_flash_threshold(speedGame) == 100u,
+                 "shared historical Game.Speed scales actor pixels and timer division");
+    speedGame.gameSpeed = 0u;
+    ok &= expect(game_frightened_duration_steps(speedGame) == 800u,
+                 "zero Game.Speed is normalized before division");
+    speedGame.gameSpeed = 0xFFFFFFFFu;
+    ok &= expect(game_frightened_duration_steps(speedGame) == 200u &&
+                 game_frightened_flash_threshold(speedGame) == 50u,
+                 "very high Game.Speed remains bounded by the historical maximum");
+    speedGame.levelNumber = 0xFFFFFFFFu;
+    game_reset_level(&speedGame);
+    ok &= expect(speedGame.levelNumber == kPacManHistoricalMaximumLevel,
+                 "level reset saturates a very high counter instead of wrapping");
+
+    GameState game{};
+    game_initialize(&game);
+    game.score = 50u;
+    game.lives = 2u;
+    game.ghostEatChain = 4u;
+    game.ghosts[0].condition = GhostCondition::Eaten;
+    game.ghosts[0].releaseState = GhostReleaseState::ReturningHouse;
+    game.ghosts[0].powerPillStepsRemaining = 17u;
+    game_press_direction(&game, Direction::Left);
+
+    for (uint32_t transition = 0; transition < 10u; ++transition) {
+        keep_only_normal_target(&game, 2, 1);
+        set_before_target(&game, 2, 1, Direction::Right);
+        game.pacman.speed = 0;
+        game_update(&game);
+        ok &= expect(game.playState == PlayState::LevelComplete,
+                     "each final consumable enters exactly one completion state");
+
+        for (uint32_t step = 0; step < kPacManLevelCompleteDelaySteps; ++step) game_update(&game);
+        const uint32_t expectedLevel = transition < 7u ? transition + 2u : 8u;
+        ok &= expect(game.playState == PlayState::ReadyAfterDeath &&
+                     game.levelNumber == expectedLevel &&
+                     game.level.totalConsumablesRemaining == 244u &&
+                     game.readyStepsRemaining == calculate_level_rules(expectedLevel).readyDurationSteps,
+                     "completion resets the maze once and enters the next-level Ready state");
+        ok &= expect(game.score == 50u + (transition + 1u) *
+                     (kPacManNormalPillScore + kPacManLevelCompleteBonus) &&
+                     game.lives == 2u,
+                     "score and lives survive repeated level transitions");
+        ok &= expect(game.pacman.x == 224 && game.pacman.y == 376 &&
+                     game.pacman.direction == Direction::Right &&
+                     game.pacman.requestedDirection == Direction::None &&
+                     !game.held.left && !game.held.right && !game.held.up && !game.held.down,
+                     "next-level reset clears input and restores Pac-Man");
+        for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+            ok &= expect(game.ghosts[index].condition == GhostCondition::Normal &&
+                         game.ghosts[index].powerPillStepsRemaining == 0u &&
+                         game.ghosts[index].condition != GhostCondition::Returning &&
+                         game.ghosts[index].releaseState != GhostReleaseState::ReturningHouse,
+                         "next-level reset clears frightened and returning ghost state");
+        }
+        ok &= expect(game.ghostEatChain == 0u,
+                     "next-level reset clears the ghost-eating chain");
+        for (uint32_t step = 0; step < calculate_level_rules(expectedLevel).readyDurationSteps; ++step) {
+            game_update(&game);
+        }
+        ok &= expect(game.playState == PlayState::Playing,
+                     "Ready resumes gameplay on every consecutive level");
+    }
+
+    ok &= expect(game.levelResetCount == 10u && game.levelNumber == 8u &&
+                 game_frightened_duration_steps(game) == 200u,
+                 "ten consecutive simulated transitions remain bounded at level 8");
+    return ok;
+}
+
 }
 
 int main() {
@@ -2322,6 +2434,7 @@ int main() {
     ok &= test_cyan_reset_lifecycle();
     ok &= test_death_lives_and_reset();
     ok &= test_game_over_and_restart();
+    ok &= test_level_rules_and_consecutive_progression();
     std::cout << (ok ? "PacMan game logic tests PASS\n" : "PacMan game logic tests FAIL\n");
     return ok ? 0 : 1;
 }

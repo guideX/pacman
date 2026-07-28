@@ -36,6 +36,7 @@ option(PACMAN_HOSTED_PINK_MOVEMENT_TEST "Enable isolated hosted Pink movement va
 option(PACMAN_HOSTED_CYAN_MOVEMENT_TEST "Enable isolated hosted Cyan movement validation without forced collisions" OFF)
 option(PACMAN_HOSTED_ORANGE_MOVEMENT_TEST "Enable isolated hosted Orange movement validation without forced collisions" OFF)
 option(PACMAN_HOSTED_POWER_PILL_TEST "Enable isolated hosted power-pill lifecycle validation" OFF)
+option(PACMAN_HOSTED_LEVEL_TEST "Enable isolated hosted multi-level progression validation" OFF)
 if(PACMAN_HOSTED_RED_MOVEMENT_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
     message(FATAL_ERROR "PACMAN_HOSTED_RED_MOVEMENT_TEST requires PACMAN_HOSTED_DANGER_TEST=ON so it remains in the validation package.")
 endif()
@@ -50,6 +51,9 @@ if(PACMAN_HOSTED_ORANGE_MOVEMENT_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
 endif()
 if(PACMAN_HOSTED_POWER_PILL_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
     message(FATAL_ERROR "PACMAN_HOSTED_POWER_PILL_TEST requires PACMAN_HOSTED_DANGER_TEST=ON so it remains in the validation package.")
+endif()
+if(PACMAN_HOSTED_LEVEL_TEST AND NOT PACMAN_HOSTED_DANGER_TEST)
+    message(FATAL_ERROR "PACMAN_HOSTED_LEVEL_TEST requires PACMAN_HOSTED_DANGER_TEST=ON so it remains in the validation package.")
 endif()
 if(PACMAN_ENABLE_DIAGNOSTICS)
     set(PACMAN_DIAGNOSTIC_DEFINITION "-DPACMAN_ENABLE_DIAGNOSTICS=1")
@@ -86,6 +90,11 @@ if(PACMAN_HOSTED_POWER_PILL_TEST)
 else()
     set(PACMAN_POWER_PILL_TEST_DEFINITION "-DPACMAN_HOSTED_POWER_PILL_TEST=0")
 endif()
+if(PACMAN_HOSTED_LEVEL_TEST)
+    set(PACMAN_LEVEL_TEST_DEFINITION "-DPACMAN_HOSTED_LEVEL_TEST=1")
+else()
+    set(PACMAN_LEVEL_TEST_DEFINITION "-DPACMAN_HOSTED_LEVEL_TEST=0")
+endif()
 if(PACMAN_HOSTED_DANGER_TEST)
     set(GUIDEXOS_ELF_NAME "pacman-danger-validation.elf")
     set(GUIDEXOS_STAGED_APP_DIR "${GUIDEXOS_PACKAGE_ROOT}/PacManDangerValidation")
@@ -106,29 +115,35 @@ set(GUIDEXOS_ELF "${GUIDEXOS_LOCAL_BIN_DIR}/${GUIDEXOS_ELF_NAME}")
 set(GUIDEXOS_MAIN_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/main.o")
 set(GUIDEXOS_GAME_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/game.o")
 set(GUIDEXOS_LEVEL_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/level.o")
+set(GUIDEXOS_LEVEL_RULES_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/level_rules.o")
 set(GUIDEXOS_RENDERER_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/renderer.o")
 set(GUIDEXOS_LOADER_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/bitmap_loader.o")
-set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUIDEXOS_LEVEL_OBJECT}" "${GUIDEXOS_RENDERER_OBJECT}" "${GUIDEXOS_LOADER_OBJECT}")
+set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUIDEXOS_LEVEL_OBJECT}" "${GUIDEXOS_LEVEL_RULES_OBJECT}" "${GUIDEXOS_RENDERER_OBJECT}" "${GUIDEXOS_LOADER_OBJECT}")
 
 add_custom_command(OUTPUT "${GUIDEXOS_MAIN_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
-    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} ${PACMAN_POWER_PILL_TEST_DEFINITION} ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
-    DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/bitmap_loader.h src/renderer.h
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} ${PACMAN_POWER_PILL_TEST_DEFINITION} ${PACMAN_LEVEL_TEST_DEFINITION} ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
+    DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/level_rules.h src/bitmap_loader.h src/renderer.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_GAME_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/game.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_GAME_OBJECT}"
-    DEPENDS src/game.cpp src/game.h src/game_state.h src/level.h src/game_types.h
+    DEPENDS src/game.cpp src/game.h src/game_state.h src/level.h src/level_rules.h src/game_types.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_LEVEL_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/level.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LEVEL_OBJECT}"
     DEPENDS src/level.cpp src/level.h src/game_state.h src/game_types.h
 )
+add_custom_command(OUTPUT "${GUIDEXOS_LEVEL_RULES_OBJECT}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/level_rules.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LEVEL_RULES_OBJECT}"
+    DEPENDS src/level_rules.cpp src/level_rules.h
+)
 add_custom_command(OUTPUT "${GUIDEXOS_RENDERER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DANGER_TEST_DEFINITION} ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/renderer.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_RENDERER_OBJECT}"
-    DEPENDS src/renderer.cpp src/game.h src/game_types.h src/game_state.h src/renderer.h src/level.h
+    DEPENDS src/renderer.cpp src/game.h src/game_types.h src/game_state.h src/renderer.h src/level.h src/level_rules.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_LOADER_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
@@ -143,7 +158,7 @@ add_custom_command(OUTPUT "${GUIDEXOS_ELF}"
 )
 add_custom_target(${GUIDEXOS_NATIVE_TARGET} ALL DEPENDS "${GUIDEXOS_ELF}")
 
-add_executable(pacman-game-tests tests/game_logic_test.cpp src/game.cpp src/level.cpp src/renderer.cpp)
+add_executable(pacman-game-tests tests/game_logic_test.cpp src/game.cpp src/level.cpp src/level_rules.cpp src/renderer.cpp)
 target_include_directories(pacman-game-tests PRIVATE "${GUIDEXOS_SDK_ROOT}/include" "${GUIDEXOS_APP_ROOT}/src")
 set_target_properties(pacman-game-tests PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 

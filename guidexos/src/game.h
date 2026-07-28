@@ -1,10 +1,12 @@
 #pragma once
 
 #include "game_state.h"
+#include "level_rules.h"
 
 static const uint32_t kPacManLevelCompleteDelaySteps = 100u;
 static const uint32_t kPacManDeathDurationSteps = 100u;
 static const uint32_t kPacManReadyAfterDeathSteps = 60u;
+static const uint32_t kPacManLevelCompleteBonus = 1000u;
 static const uint8_t kPacManInitialLives = 3u;
 static const uint32_t kPacManGhostCount = 4u;
 static const uint32_t kPacManNormalPillScore = 10u;

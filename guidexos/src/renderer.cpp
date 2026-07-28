@@ -2,6 +2,7 @@
 
 #include "game.h"
 #include "level.h"
+#include "level_rules.h"
 
 namespace {
 
@@ -91,6 +92,7 @@ static const char* glyph(char c) {
     case 'C': return "01110 10001 10000 10000 10000 10001 01110";
     case 'D': return "11110 10001 10001 10001 10001 10001 11110";
     case 'E': return "11111 10000 10000 11110 10000 10000 11111";
+    case 'F': return "11111 10000 10000 11110 10000 10000 10000";
     case 'G': return "01110 10001 10000 10111 10001 10001 01110";
     case 'H': return "10001 10001 10001 11111 10001 10001 10001";
     case 'I': return "11111 00100 00100 00100 00100 00100 11111";
@@ -222,6 +224,24 @@ static void draw_validation_power_pill_indicator(uint32_t* frame, const GameStat
     draw_text(frame, 242, 544, "CH:", 0x0000FFFFu, 1);
     draw_number(frame, 266, 544, game.ghostEatChain, 0x0000FFFFu, 1);
 }
+
+static void draw_validation_level_rules(uint32_t* frame, const GameState& game) {
+    // Validation-only compact rule readout.  It is confined to the existing
+    // bottom strip and is absent from production builds.
+    const uint32_t color = 0x0000FFFFu;
+    const LevelRules rules = calculate_level_rules(game.levelNumber);
+    const uint32_t speed = sanitize_game_speed(game.gameSpeed);
+    draw_text(frame, 280, 544, "LVL:", color, 1);
+    draw_number(frame, 304, 544, rules.level, color, 1);
+    draw_text(frame, 316, 544, "PM:", color, 1);
+    draw_number(frame, 334, 544, rules.pacmanMovePixelsPerStep * speed, color, 1);
+    draw_text(frame, 346, 544, "G:", color, 1);
+    draw_number(frame, 358, 544, rules.normalGhostMovePixelsPerStep * speed, color, 1);
+    draw_text(frame, 370, 544, "FG:", color, 1);
+    draw_number(frame, 388, 544, rules.frightenedGhostMoveIntervalSteps, color, 1);
+    draw_text(frame, 400, 544, "PP:", color, 1);
+    draw_number(frame, 418, 544, game_frightened_duration_steps(game), color, 1);
+}
 #endif
 
 }
@@ -280,6 +300,7 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
     draw_text(framePixels, 394, 10, markerState, 0x0000FFFFu, 1);
     draw_number(framePixels, 406, 10, static_cast<uint32_t>(validationFrameSequence), 0x0000FFFFu, 1);
     draw_validation_power_pill_indicator(framePixels, *game);
+    draw_validation_level_rules(framePixels, *game);
 #else
     (void)validationFrameSequence;
 #endif
