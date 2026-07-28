@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "com.guidexos.pacman.baremetal-level-validation",
+  "displayName": "Nexgen PacMan Level Validation",
+  "version": "0.1.0-validation",
+  "publisher": "Team Nexgen / guideXOS",
+  "description": "Test-only QEMU bare-metal Native ELF validation package; never use as the production Pac-Man package.",
+  "category": "Games",
+  "kind": "NativeElf",
+  "icon": "",
+  "minGuideXOSVersion": "0.1.0",
+  "supportedArchitectures": [
+    "amd64"
+  ],
+  "entries": [
+    {
+      "architecture": "amd64",
+      "path": "bin/amd64/pacval.elf",
+      "entryPoint": "gx_main",
+      "abi": "guidexos-c-abi-v1",
+      "runtime": "native-elf"
+    }
+  ],
+  "permissions": [
+    "log",
+    "window",
+    "draw",
+    "file.read"
+  ],
+  "defaultWindow": {
+    "width": 480,
+    "height": 640,
+    "resizable": false
+  }
+}

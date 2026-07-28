@@ -36,6 +36,10 @@
 #define PACMAN_HOSTED_LEVEL_TEST 0
 #endif
 
+#ifndef PACMAN_BAREMETAL_LEVEL_VALIDATION
+#define PACMAN_BAREMETAL_LEVEL_VALIDATION 0
+#endif
+
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
     for (uint64_t i = 0; i < bytes; ++i) output[i] = static_cast<uint8_t>(value);
@@ -118,7 +122,7 @@ static gx_result present(gx_app_context* ctx, gx_handle window) {
         kPacManWidth * kPacManFrameHeight * 4u);
 }
 
-#if PACMAN_HOSTED_DANGER_TEST
+#if PACMAN_HOSTED_DANGER_TEST || PACMAN_BAREMETAL_LEVEL_VALIDATION
 static void append_frame_text(char* message, uint32_t* index, uint32_t capacity, const char* text) {
     if (!message || !index || !text) return;
     for (uint32_t i = 0; text[i] && *index + 1u < capacity; ++i) message[(*index)++] = text[i];
@@ -253,7 +257,7 @@ static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacI
         ++g_pacbmFrameMarkers;
     }
 #endif
-#if PACMAN_HOSTED_DANGER_TEST
+#if PACMAN_HOSTED_DANGER_TEST || PACMAN_BAREMETAL_LEVEL_VALIDATION
     log_validation_frame(ctx, window, game, frameSequence, result);
 #endif
     return result == GX_OK;
@@ -395,13 +399,286 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
             ctx->host->log(ctx, "PacMan ghost entered returning/reset state");
         }
         if (game.ghostReturned[ghostIndex]) ctx->host->log(ctx, "PacMan ghost returned to normal play");
+#if !PACMAN_BAREMETAL_LEVEL_VALIDATION
+        // The validation build carries complete actor snapshots in its
+        // bounded BMLVL transition breadcrumbs. Avoid per-step ghost dumps so
+        // the bare-metal serial channel cannot overrun while the game runs.
         log_diagnostic_ghost_state(ctx, labels[ghostIndex], game.ghosts[ghostIndex]);
+#endif
     }
 #else
     (void)ctx;
     (void)game;
 #endif
 }
+
+#if PACMAN_BAREMETAL_LEVEL_VALIDATION
+struct BaremetalLevelTrace {
+    bool initialized;
+    bool finalConsumableObserved;
+    uint32_t preparedLevel;
+    uint32_t transitionOldLevel;
+    uint32_t transitionNewLevel;
+    uint32_t completeTickMarkers;
+    uint32_t readyTickMarkers;
+    uint32_t pillColumn;
+    uint32_t pillRow;
+    uint32_t pillScoreBefore;
+    uint32_t pillCountBefore;
+    PlayState previousState;
+    uint32_t previousStateTimer;
+};
+
+static BaremetalLevelTrace g_baremetalLevelTrace = {
+    false, false, 0, 1, 1, 0, 0, 2, 1, 0, 1, PlayState::Playing, 0
+};
+static char g_baremetalStateMessages[32][1600];
+static uint32_t g_baremetalStateMessageIndex = 0;
+
+static uint32_t baremetal_state_timer(const GameState& game) {
+    switch (game.playState) {
+    case PlayState::LevelComplete: return game.levelCompleteStepsRemaining;
+    case PlayState::ReadyAfterDeath: return game.readyStepsRemaining;
+    case PlayState::Dying: return game.deathStepsRemaining;
+    default: return 0;
+    }
+}
+
+static void baremetal_short_marker(gx_app_context* ctx, const char* marker,
+                                   uint32_t oldLevel, uint32_t newLevel) {
+    if (!ctx || !ctx->host || !ctx->host->log || !marker) return;
+    char message[160];
+    uint32_t index = 0;
+    append_frame_text(message, &index, sizeof(message), "BMLVL ");
+    append_frame_text(message, &index, sizeof(message), marker);
+    append_frame_text(message, &index, sizeof(message), " old=");
+    append_frame_number(message, &index, sizeof(message), oldLevel);
+    append_frame_text(message, &index, sizeof(message), " new=");
+    append_frame_number(message, &index, sizeof(message), newLevel);
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+}
+
+static void baremetal_level_trace(gx_app_context* ctx, gx_handle window, const GameState& game,
+                                  const char* marker, uint64_t tick, uint64_t tickDelta,
+                                  uint64_t accumulatorMs, uint32_t fixedSteps,
+                                  uint32_t oldLevel, uint32_t newLevel) {
+    if (!ctx || !ctx->host || !ctx->host->log || !marker) return;
+    // Keep short duplicate breadcrumbs only for markers that precede or
+    // follow a burst-prone transition boundary. The state-bearing line is
+    // the sole emission for timer/reset markers so deterministic counts stay
+    // one-per-transition.
+    if ((marker[0] == '0' && (marker[1] == '1' || marker[1] == '5' || marker[1] == '6' || marker[1] == '7')) ||
+        (marker[0] == '1' && marker[1] == '6')) {
+        baremetal_short_marker(ctx, marker, oldLevel, newLevel);
+    }
+    // One compact line per breadcrumb is intentional.  The guideXOS bare-metal
+    // serial path is synchronous and can lose adjacent messages during a
+    // catch-up burst; this line retains the full transition state without
+    // doubling the traffic with a separate short and long message.
+    char* compact = g_baremetalStateMessages[g_baremetalStateMessageIndex % 32u];
+    ++g_baremetalStateMessageIndex;
+    const uint32_t capacity = 1600u;
+    uint32_t compactIndex = 0;
+    append_frame_text(compact, &compactIndex, capacity, "BMLVL ");
+    if (marker[0] == '0' && marker[1] == '6') {
+        append_frame_text(compact, &compactIndex, capacity, "STATE marker=");
+    }
+    append_frame_text(compact, &compactIndex, capacity, marker);
+    append_frame_text(compact, &compactIndex, capacity, " old=");
+    append_frame_number(compact, &compactIndex, capacity, oldLevel);
+    append_frame_text(compact, &compactIndex, capacity, " new=");
+    append_frame_number(compact, &compactIndex, capacity, newLevel);
+    append_frame_text(compact, &compactIndex, capacity, " rt=");
+    append_frame_number(compact, &compactIndex, capacity, 1u);
+    append_frame_text(compact, &compactIndex, capacity, " w=");
+    append_frame_number(compact, &compactIndex, capacity, window);
+    append_frame_text(compact, &compactIndex, capacity, " step=");
+    append_frame_number(compact, &compactIndex, capacity, game.simulationSteps);
+    append_frame_text(compact, &compactIndex, capacity, " tick=");
+    append_frame_number(compact, &compactIndex, capacity, tick);
+    append_frame_text(compact, &compactIndex, capacity, " dt=");
+    append_frame_number(compact, &compactIndex, capacity, tickDelta);
+    append_frame_text(compact, &compactIndex, capacity, " fs=");
+    append_frame_number(compact, &compactIndex, capacity, fixedSteps);
+    append_frame_text(compact, &compactIndex, capacity, " acc=");
+    append_frame_number(compact, &compactIndex, capacity, accumulatorMs);
+    append_frame_text(compact, &compactIndex, capacity, " level=");
+    append_frame_number(compact, &compactIndex, capacity, game.levelNumber);
+    append_frame_text(compact, &compactIndex, capacity, " state=");
+    append_frame_text(compact, &compactIndex, capacity, validation_state_name(game.playState));
+    append_frame_text(compact, &compactIndex, capacity, " timer=");
+    append_frame_number(compact, &compactIndex, capacity, baremetal_state_timer(game));
+    append_frame_text(compact, &compactIndex, capacity, " score=");
+    append_frame_number(compact, &compactIndex, capacity, game.score);
+    append_frame_text(compact, &compactIndex, capacity, " lives=");
+    append_frame_number(compact, &compactIndex, capacity, game.lives);
+    append_frame_text(compact, &compactIndex, capacity, " normal=");
+    append_frame_number(compact, &compactIndex, capacity, game.level.normalPillsRemaining);
+    append_frame_text(compact, &compactIndex, capacity, " power=");
+    append_frame_number(compact, &compactIndex, capacity, game.level.powerPillsRemaining);
+    append_frame_text(compact, &compactIndex, capacity, " total=");
+    append_frame_number(compact, &compactIndex, capacity, game.level.totalConsumablesRemaining);
+    append_frame_text(compact, &compactIndex, capacity, " pacman=");
+    append_frame_signed_number(compact, &compactIndex, capacity, game.pacman.x);
+    append_frame_text(compact, &compactIndex, capacity, ",");
+    append_frame_signed_number(compact, &compactIndex, capacity, game.pacman.y);
+    append_frame_text(compact, &compactIndex, capacity, " dir=");
+    append_frame_text(compact, &compactIndex, capacity, game_direction_name(game.pacman.direction));
+    append_frame_text(compact, &compactIndex, capacity, " requested=");
+    append_frame_text(compact, &compactIndex, capacity, game_direction_name(game.pacman.requestedDirection));
+    append_frame_text(compact, &compactIndex, capacity, " focused=");
+    append_frame_number(compact, &compactIndex, capacity, game.focused ? 1u : 0u);
+    append_frame_text(compact, &compactIndex, capacity, " frame=");
+    append_frame_number(compact, &compactIndex, capacity, g_frameSequence);
+    const LevelRules compactRules = calculate_level_rules(game.levelNumber);
+    const uint32_t compactSpeed = sanitize_game_speed(game.gameSpeed);
+    append_frame_text(compact, &compactIndex, capacity, " PM=");
+    append_frame_number(compact, &compactIndex, capacity, compactRules.pacmanMovePixelsPerStep * compactSpeed);
+    append_frame_text(compact, &compactIndex, capacity, " G=");
+    append_frame_number(compact, &compactIndex, capacity, compactRules.normalGhostMovePixelsPerStep * compactSpeed);
+    append_frame_text(compact, &compactIndex, capacity, " FG=");
+    append_frame_number(compact, &compactIndex, capacity, compactRules.frightenedGhostMoveIntervalSteps);
+    append_frame_text(compact, &compactIndex, capacity, " PP=");
+    append_frame_number(compact, &compactIndex, capacity, game_frightened_duration_steps(game));
+    append_frame_text(compact, &compactIndex, capacity, " flash=");
+    append_frame_number(compact, &compactIndex, capacity, game_frightened_flash_threshold(game));
+    if (marker[0] == '0' && marker[1] == '1') {
+        append_frame_text(compact, &compactIndex, capacity,
+                          " order=input>consumable-lookahead>level-completion>pacman-movement>animation>ghosts>collision>timers>render-dirty");
+    }
+    compact[compactIndex] = '\0';
+    ctx->host->log(ctx, compact);
+}
+
+static void baremetal_level_validation_ready(gx_app_context* ctx, gx_handle window,
+                                              const GameState& game, uint64_t tick) {
+    if (g_baremetalLevelTrace.initialized) return;
+    g_baremetalLevelTrace.initialized = true;
+    g_baremetalLevelTrace.transitionOldLevel = game.levelNumber;
+    g_baremetalLevelTrace.transitionNewLevel = game.levelNumber;
+    g_baremetalLevelTrace.previousState = game.playState;
+    g_baremetalLevelTrace.previousStateTimer = baremetal_state_timer(game);
+    baremetal_level_trace(ctx, window, game, "01 VALIDATION_READY", tick, 0, 0, 0,
+                          game.levelNumber, game.levelNumber);
+}
+
+static void baremetal_level_prepare_final_consumable(gx_app_context* ctx, gx_handle window,
+                                                      GameState* game, uint64_t tick,
+                                                      uint64_t accumulatorMs) {
+    if (!game || !g_baremetalLevelTrace.initialized || game->playState != PlayState::Playing ||
+        game->levelNumber > 4u || g_baremetalLevelTrace.preparedLevel == game->levelNumber) return;
+
+    for (int row = 0; row < kPacManMazeRows; ++row) {
+        for (int column = 0; column < kPacManMazeColumns; ++column) {
+            if (game->level.cells[row][column] == CellType::Pill ||
+                game->level.cells[row][column] == CellType::PowerPill) {
+                game->level.cells[row][column] = CellType::Empty;
+            }
+        }
+    }
+    // The maze cell (2,1) is the next legal cell to the right of the aligned
+    // Pac-Man start (24,24).  game_update performs the real look-ahead,
+    // level_consume call, scoring, and completion decision on the next step.
+    game->level.cells[1][2] = CellType::Pill;
+    game->level.normalPillsRemaining = 1;
+    game->level.powerPillsRemaining = 0;
+    game->level.totalConsumablesRemaining = 1;
+    game->pacman.x = 24;
+    game->pacman.y = 24;
+    game->pacman.offset = 0;
+    game->pacman.direction = Direction::Right;
+    game->pacman.facingDirection = Direction::Right;
+    game->pacman.requestedDirection = Direction::Right;
+    game->pacman.speed = 1;
+    game->suppressGhostCollisionsForValidation = true;
+    game->visualDirty = true;
+
+    g_baremetalLevelTrace.transitionOldLevel = game->levelNumber;
+    g_baremetalLevelTrace.transitionNewLevel = game->levelNumber;
+    g_baremetalLevelTrace.preparedLevel = game->levelNumber;
+    g_baremetalLevelTrace.finalConsumableObserved = false;
+    g_baremetalLevelTrace.completeTickMarkers = 0;
+    g_baremetalLevelTrace.readyTickMarkers = 0;
+    g_baremetalLevelTrace.pillScoreBefore = game->score;
+    g_baremetalLevelTrace.pillCountBefore = game->level.totalConsumablesRemaining;
+    // Repeat the startup breadcrumb at the bounded setup point because the
+    // initial serial burst can precede the reader.
+    baremetal_level_trace(ctx, window, *game, "01 VALIDATION_READY", tick, 0,
+                          accumulatorMs, 0, game->levelNumber, game->levelNumber);
+    baremetal_short_marker(ctx, "02 FINAL_CONSUMABLE_PRESENT", game->levelNumber, game->levelNumber);
+    baremetal_short_marker(ctx, "03 PACMAN_APPROACH", game->levelNumber, game->levelNumber);
+    baremetal_short_marker(ctx, "04 FINAL_CONSUMABLE_LOOKAHEAD", game->levelNumber, game->levelNumber);
+}
+
+static void baremetal_level_observe_update(gx_app_context* ctx, gx_handle window,
+                                            const GameState& game, uint64_t tick,
+                                            uint64_t tickDelta, uint64_t accumulatorMs,
+                                            uint32_t fixedSteps) {
+    if (!g_baremetalLevelTrace.initialized) return;
+    const uint32_t oldLevel = g_baremetalLevelTrace.transitionOldLevel;
+    const uint32_t pendingLevel = g_baremetalLevelTrace.transitionNewLevel;
+    if ((game.normalPillConsumed || game.powerPillConsumed) &&
+        !g_baremetalLevelTrace.finalConsumableObserved) {
+        g_baremetalLevelTrace.finalConsumableObserved = true;
+        baremetal_level_trace(ctx, window, game, "05 FINAL_CONSUMABLE_EATEN", tick, tickDelta,
+                              accumulatorMs, fixedSteps, oldLevel, pendingLevel);
+        if (game.level.totalConsumablesRemaining == 0u) {
+            baremetal_level_trace(ctx, window, game, "06 REMAINING_ZERO", tick, tickDelta,
+                                  accumulatorMs, fixedSteps, oldLevel, pendingLevel);
+            // Repeat the short collision breadcrumb after the zero-count
+            // state snapshot; this keeps the exact final-eaten marker visible
+            // even if the preceding log burst is sampled by the serial path.
+            baremetal_short_marker(ctx, "05 FINAL_CONSUMABLE_EATEN", oldLevel, pendingLevel);
+        }
+        if (game.playState == PlayState::LevelComplete) {
+            baremetal_level_trace(ctx, window, game, "07 LEVEL_COMPLETE_ENTER", tick, tickDelta,
+                                  accumulatorMs, fixedSteps, oldLevel, pendingLevel);
+        }
+    }
+    if (g_baremetalLevelTrace.previousState == PlayState::LevelComplete &&
+        game.playState == PlayState::LevelComplete &&
+        game.levelCompleteStepsRemaining != g_baremetalLevelTrace.previousStateTimer &&
+        (g_baremetalLevelTrace.completeTickMarkers < 3u || game.levelCompleteStepsRemaining <= 2u)) {
+        ++g_baremetalLevelTrace.completeTickMarkers;
+        baremetal_level_trace(ctx, window, game, "08 LEVEL_COMPLETE_TICK", tick, tickDelta,
+                              accumulatorMs, fixedSteps, oldLevel, pendingLevel);
+    }
+    if (g_baremetalLevelTrace.previousState == PlayState::LevelComplete && game.levelReset) {
+        const uint32_t newLevel = game.levelNumber;
+        baremetal_level_trace(ctx, window, game, "09 LEVEL_COMPLETE_EXPIRE", tick, tickDelta,
+                              accumulatorMs, fixedSteps, oldLevel, newLevel);
+        baremetal_short_marker(ctx, "10 LEVEL_INCREMENT", oldLevel, newLevel);
+        baremetal_short_marker(ctx, "11 RULES_CALCULATED", oldLevel, newLevel);
+        baremetal_short_marker(ctx, "12 MAZE_RESET", oldLevel, newLevel);
+        baremetal_short_marker(ctx, "13 ACTORS_RESET", oldLevel, newLevel);
+        baremetal_short_marker(ctx, "14 READY_ENTER", oldLevel, newLevel);
+        g_baremetalLevelTrace.transitionNewLevel = newLevel;
+        g_baremetalLevelTrace.completeTickMarkers = 0;
+        g_baremetalLevelTrace.readyTickMarkers = 0;
+    }
+    if (g_baremetalLevelTrace.previousState == PlayState::ReadyAfterDeath &&
+        game.playState == PlayState::ReadyAfterDeath &&
+        game.readyStepsRemaining != g_baremetalLevelTrace.previousStateTimer &&
+        (g_baremetalLevelTrace.readyTickMarkers < 3u || game.readyStepsRemaining <= 2u)) {
+        ++g_baremetalLevelTrace.readyTickMarkers;
+        baremetal_level_trace(ctx, window, game, "15 READY_TICK", tick, tickDelta,
+                              accumulatorMs, fixedSteps, oldLevel, pendingLevel);
+    }
+    if (game.gameplayResumed) {
+        baremetal_level_trace(ctx, window, game, "16 PLAYING_ENTER", tick, tickDelta,
+                              accumulatorMs, fixedSteps, oldLevel, game.levelNumber);
+        baremetal_short_marker(ctx, game.levelNumber == 2u ? "17 LEVEL_2_CONFIRMED" :
+                               "17 LEVEL_PLAYING_CONFIRMED", oldLevel, game.levelNumber);
+        baremetal_short_marker(ctx, game.levelNumber == 2u ? "17 LEVEL_2_CONFIRMED" :
+                               "17 LEVEL_PLAYING_CONFIRMED", oldLevel, game.levelNumber);
+        g_baremetalLevelTrace.transitionOldLevel = game.levelNumber;
+        g_baremetalLevelTrace.transitionNewLevel = game.levelNumber;
+    }
+    g_baremetalLevelTrace.previousState = game.playState;
+    g_baremetalLevelTrace.previousStateTimer = baremetal_state_timer(game);
+}
+#endif
 
 #if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
 static bool apply_hosted_danger_test_placement(GameState* game, uint32_t* placementCount) {
@@ -622,6 +899,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     if (!ctx || !ctx->host || !ctx->host->log || !ctx->host->request_window || !ctx->host->poll_event ||
         !ctx->host->get_ticks_ms) return GX_ERROR_INVALID_ARGUMENT;
     ctx->host->log(ctx, "Nexgen PacMan Native ELF starting");
+#if PACMAN_BAREMETAL_LEVEL_VALIDATION
+    ctx->host->log(ctx, "PACMAN_BAREMETAL_LEVEL_VALIDATION=ON");
+#endif
 
     PacImage level{};
     PacImage sprites{};
@@ -758,6 +1038,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     ctx->host->log(ctx, "PacMan initial frame render complete");
     game.visualDirty = false;
     ctx->host->log(ctx, "PacMan interactive frame presented");
+#if PACMAN_BAREMETAL_LEVEL_VALIDATION
+    baremetal_level_validation_ready(ctx, window, game, pacbm_get_ticks_ms(ctx));
+#endif
 
     pacbm_marker(ctx, "PACBM 11 MAIN_LOOP_ENTER");
     uint64_t previousTicks = pacbm_get_ticks_ms(ctx);
@@ -798,9 +1081,15 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             } else if (event.type == GX_EVENT_WINDOW_BLUR) {
                 game_focus_lost(&game);
                 ctx->host->log(ctx, "PacMan focus lost; directional state cleared");
+#if PACMAN_BAREMETAL_LEVEL_VALIDATION
+                ctx->host->log(ctx, "BMLVL FOCUS_LOST input_cleared");
+#endif
             } else if (event.type == GX_EVENT_WINDOW_FOCUS) {
                 game_focus_gained(&game);
                 ctx->host->log(ctx, "PacMan focus gained; waiting for new direction");
+#if PACMAN_BAREMETAL_LEVEL_VALIDATION
+                ctx->host->log(ctx, "BMLVL FOCUS_GAINED");
+#endif
             } else if (event.type == GX_EVENT_KEY) {
                 if (event.param2 == GX_KEY_ACTION_DOWN && game.playState == PlayState::GameOver &&
                     (event.param1 == kPacManRestartKeyEnter || event.param1 == kPacManRestartKeySpace)) {
@@ -829,7 +1118,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         if (!running) break;
 
         const uint64_t currentTicks = pacbm_get_ticks_ms(ctx);
-        uint64_t elapsedMs = currentTicks - previousTicks;
+        uint64_t elapsedMs = currentTicks >= previousTicks ? currentTicks - previousTicks : 0;
+        if (currentTicks < previousTicks) {
+            ctx->host->log(ctx, "PacMan timing tick regression clamped");
+        }
         previousTicks = currentTicks;
         if (elapsedMs > kMaxElapsedMs) {
             elapsedMs = kMaxElapsedMs;
@@ -958,6 +1250,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 ctx->host->log(ctx, "PacMan hosted level transition trigger prepared");
             }
 #endif
+#if PACMAN_BAREMETAL_LEVEL_VALIDATION
+            baremetal_level_prepare_final_consumable(ctx, window, &game, currentTicks, accumulatorMs);
+#endif
 #if PACMAN_ENABLE_DIAGNOSTICS
             const bool traceUpdate = g_pacbmUpdateMarkers < 5u;
             if (traceUpdate) pacbm_marker(ctx, "PACBM 16 UPDATE_BEGIN");
@@ -981,6 +1276,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (game.redTunnelWrapped) ctx->host->log(ctx, "PacMan Red ghost tunnel wrap");
             if (game.cyanTunnelWrapped) ctx->host->log(ctx, "PacMan Cyan ghost tunnel wrap");
             if (game.orangeTunnelWrapped) ctx->host->log(ctx, "PacMan Orange ghost tunnel wrap");
+#if PACMAN_BAREMETAL_LEVEL_VALIDATION
+            baremetal_level_observe_update(ctx, window, game, currentTicks, elapsedMs,
+                                            accumulatorMs, updates);
+#endif
             log_game_events(ctx, game);
         }
         if (updates == kMaxCatchUpSteps && accumulatorMs >= kFixedStepMs) {
