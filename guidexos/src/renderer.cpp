@@ -4,6 +4,13 @@
 #include "level.h"
 #include "level_rules.h"
 
+#ifndef PACMAN_HOSTED_FRUIT_TEST
+#define PACMAN_HOSTED_FRUIT_TEST 0
+#endif
+#ifndef PACMAN_BAREMETAL_FRUIT_VALIDATION
+#define PACMAN_BAREMETAL_FRUIT_VALIDATION 0
+#endif
+
 namespace {
 
 static uint32_t* pixel(uint32_t* frame, int x, int y) {
@@ -51,6 +58,17 @@ static void draw_pills(uint32_t* frame, const LevelState& level) {
             }
         }
     }
+}
+
+static void draw_sprite(const PacImage* sprites, uint32_t* frame, int destinationX, int destinationY,
+                        int sourceX, int sourceY, int maskX);
+
+static void draw_fruit(const PacImage* sprites, uint32_t* frame, const GameState& game) {
+    if (!sprites || game.fruit.phase != FruitPhase::Visible ||
+        game.playState == PlayState::GameOver) return;
+    const FruitRules rules = calculate_fruit_rules(game.levelNumber);
+    draw_sprite(sprites, frame, game.fruit.x - 16, game.fruit.y - 16,
+                rules.sprite.x, rules.sprite.y, rules.mask.x);
 }
 
 static void draw_sprite(const PacImage* sprites, uint32_t* frame, int destinationX, int destinationY,
@@ -157,7 +175,12 @@ static void draw_status(uint32_t* frame, const GameState& game) {
     draw_text(frame, 10, 10, "SCORE:", color, 1);
     draw_number(frame, 52, 10, game.score, color, 1);
     draw_text(frame, 190, 10, "LIVES:", color, 1);
-    draw_number(frame, 232, 10, game.lives, color, 1);
+    // ShowLives in the VB6 source renders Lives - 1 reserve Pac-Man icons.
+    // The native HUD keeps its compact numeric presentation but preserves
+    // those reserve-life semantics; GameState::lives remains the total life
+    // counter used by the death state.
+    const uint32_t spareLives = game.lives > 0u ? game.lives - 1u : 0u;
+    draw_number(frame, 232, 10, spareLives, color, 1);
     draw_text(frame, 300, 10, "LEVEL:", color, 1);
     draw_number(frame, 342, 10, game.levelNumber, color, 1);
 }
@@ -191,7 +214,7 @@ static void draw_ghosts(const PacImage* sprites, uint32_t* frame, const GameStat
     }
 }
 
-#if PACMAN_HOSTED_DANGER_TEST
+#if PACMAN_HOSTED_DANGER_TEST || PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
 static char validation_condition_code(GhostCondition condition) {
     switch (condition) {
     case GhostCondition::Normal: return 'N';
@@ -242,6 +265,30 @@ static void draw_validation_level_rules(uint32_t* frame, const GameState& game) 
     draw_text(frame, 400, 544, "PP:", color, 1);
     draw_number(frame, 418, 544, game_frightened_duration_steps(game), color, 1);
 }
+
+static char validation_fruit_phase_code(FruitPhase phase) {
+    switch (phase) {
+    case FruitPhase::Inactive: return 'I';
+    case FruitPhase::Visible: return 'V';
+    case FruitPhase::ScorePopup: return 'P';
+    }
+    return '?';
+}
+
+static void draw_validation_fruit_indicator(uint32_t* frame, const GameState& game) {
+    const uint32_t color = 0x0000FFFFu;
+    draw_text(frame, 8, 536, "FR:", color, 1);
+    char phase[2] = {validation_fruit_phase_code(game.fruit.phase), '\0'};
+    draw_text(frame, 26, 536, phase, color, 1);
+    draw_text(frame, 38, 536, "T:", color, 1);
+    draw_number(frame, 50, 536, game.fruit.visibleStepsRemaining, color, 1);
+    draw_text(frame, 86, 536, "A:", color, 1);
+    draw_number(frame, 98, 536, game.fruit.appearancesTriggered, color, 1);
+    draw_text(frame, 116, 536, "TY:", color, 1);
+    draw_number(frame, 140, 536, game.fruit.fruitType, color, 1);
+    draw_text(frame, 158, 536, "LA:", color, 1);
+    draw_number(frame, 182, 536, game.lifeAward.awardsGranted, color, 1);
+}
 #endif
 
 }
@@ -267,6 +314,7 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
     copy_pixels(backgroundPixels, framePixels);
     draw_pills(framePixels, game->level);
     draw_status(framePixels, *game);
+    draw_fruit(sprites, framePixels, *game);
     int mouthFrame = game->pacman.mouth;
     if (mouthFrame < 1 || mouthFrame > 3) mouthFrame = 3;
     const int sourceX = static_cast<int>(game->pacman.facingDirection) * kPacManSpriteSize;
@@ -289,7 +337,7 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
     } else if (game->playState == PlayState::GameOver) {
         draw_text(framePixels, 170, 270, "GAME OVER", 0x00FF4040u, 2);
     }
-#if PACMAN_HOSTED_DANGER_TEST
+#if PACMAN_HOSTED_DANGER_TEST || PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
     // Test-only identity marker. It is drawn into the same XRGB8888 frame as
     // the game and is intentionally kept in the otherwise unused right side
     // of the status strip. Production builds do not compile this path.
@@ -301,6 +349,7 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
     draw_number(framePixels, 406, 10, static_cast<uint32_t>(validationFrameSequence), 0x0000FFFFu, 1);
     draw_validation_power_pill_indicator(framePixels, *game);
     draw_validation_level_rules(framePixels, *game);
+    draw_validation_fruit_indicator(framePixels, *game);
 #else
     (void)validationFrameSequence;
 #endif

@@ -4,6 +4,7 @@
 #include "renderer.h"
 
 #include <iostream>
+#include <cstring>
 
 namespace {
 
@@ -2370,7 +2371,7 @@ bool test_level_rules_and_consecutive_progression() {
                      "completion resets the maze once and enters the next-level Ready state");
         ok &= expect(game.score == 50u + (transition + 1u) *
                      (kPacManNormalPillScore + kPacManLevelCompleteBonus) &&
-                     game.lives == 2u,
+                     game.lives == (transition == 9u ? 3u : 2u),
                      "score and lives survive repeated level transitions");
         ok &= expect(game.pacman.x == 224 && game.pacman.y == 376 &&
                      game.pacman.direction == Direction::Right &&
@@ -2396,6 +2397,215 @@ bool test_level_rules_and_consecutive_progression() {
     ok &= expect(game.levelResetCount == 10u && game.levelNumber == 8u &&
                  game_frightened_duration_steps(game) == 200u,
                  "ten consecutive simulated transitions remain bounded at level 8");
+    return ok;
+}
+
+void prepare_fruit_test_game(GameState* game) {
+    game_initialize(game);
+    game->pacman.x = 64;
+    game->pacman.y = 264;
+    game->pacman.direction = Direction::None;
+    game->pacman.facingDirection = Direction::Right;
+    game->pacman.requestedDirection = Direction::None;
+    game->pacman.offset = 0;
+    game->pacman.speed = 0;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game->ghosts[index].speed = 0;
+        game->ghosts[index].collisionActive = false;
+    }
+    game->suppressGhostCollisionsForValidation = true;
+}
+
+bool test_fruit_and_extra_life() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    const FruitRules levelOne = calculate_fruit_rules(1u);
+    const FruitRules levelTwo = calculate_fruit_rules(2u);
+    const FruitRules levelFour = calculate_fruit_rules(4u);
+    const FruitRules levelFive = calculate_fruit_rules(5u);
+    const FruitRules levelEight = calculate_fruit_rules(8u);
+    const FruitRules beyond = calculate_fruit_rules(0xFFFFFFFFu);
+
+    ok &= expect(game.fruit.phase == FruitPhase::Inactive &&
+                 game.fruit.appearancesTriggered == 0u,
+                 "fruit begins inactive with no appearance trigger consumed");
+    ok &= expect(levelOne.type == 0u && levelOne.score == 500u &&
+                 levelOne.sprite.x == 0 && levelOne.sprite.y == 256 &&
+                 levelOne.mask.x == 128 && levelOne.mask.y == 256,
+                 "Level 1 fruit is the Cherry cell and mask");
+    ok &= expect(levelTwo.type == 1u && levelTwo.score == 1000u &&
+                 levelTwo.sprite.x == 32 && levelTwo.mask.x == 160,
+                 "Level 2 fruit is the Strawberry cell and mask");
+    ok &= expect(levelFour.type == 3u && levelFour.score == 2000u &&
+                 levelFour.sprite.x == 96 && levelFour.sprite.y == 256,
+                 "Level 4 fruit is the Apple cell");
+    ok &= expect(levelFive.type == 4u && levelFive.score == 2500u &&
+                 levelFive.sprite.x == 0 && levelFive.sprite.y == 288 &&
+                 levelFive.mask.x == 128 && levelFive.mask.y == 288,
+                 "Level 5 fruit is the Melon cell and mask");
+    ok &= expect(levelEight.type == 7u && levelEight.score == 4000u &&
+                 levelEight.sprite.x == 96 && levelEight.sprite.y == 288 &&
+                 levelEight.mask.x == 224 && levelEight.mask.y == 288,
+                 "Level 8 fruit is the Key cell and mask");
+    ok &= expect(beyond.type == levelEight.type && beyond.score == levelEight.score &&
+                 beyond.sprite.x == levelEight.sprite.x && beyond.mask.x == levelEight.mask.x,
+                 "fruit mapping safely saturates above Level 8");
+    ok &= expect(levelOne.x == 232 && levelOne.y == 280 &&
+                 levelOne.triggerTimeSteps == 4000u &&
+                 levelOne.expirationTimeSteps == 5000u &&
+                 levelOne.visibleDurationSteps == 1000u,
+                 "fruit uses the historical center and 4000/5000 timer boundaries");
+    ok &= expect(std::strcmp(fruit_type_name(0u), "cherry") == 0 &&
+                 std::strcmp(fruit_type_name(7u), "key") == 0,
+                 "fruit names match the PacPics identities");
+
+    prepare_fruit_test_game(&game);
+    game.fruit.timeCountSteps = levelOne.triggerTimeSteps - 2u;
+    game_update(&game);
+    ok &= expect(game.fruit.phase == FruitPhase::Inactive &&
+                 !game.fruitTriggerReached && game.fruit.timeCountSteps == 3999u,
+                 "fruit does not appear before the exact first trigger boundary");
+    game_update(&game);
+    ok &= expect(game.fruitTriggerReached && game.fruitSpawned &&
+                 game.fruit.phase == FruitPhase::Visible &&
+                 game.fruit.appearancesTriggered == 1u &&
+                 game.fruit.fruitType == 0u && game.fruit.scoreValue == 500u &&
+                 game.fruit.visibleStepsRemaining == 1000u,
+                 "fruit appears exactly once at TimeCount 4000");
+    for (uint32_t step = 0; step < 1000u; ++step) game_update(&game);
+    ok &= expect(game.fruit.phase == FruitPhase::Visible &&
+                 game.fruit.timeCountSteps == 5000u &&
+                 game.fruit.visibleStepsRemaining == 0u,
+                 "fruit remains visible through the exact expiration count");
+    game_update(&game);
+    ok &= expect(game.fruitExpired && game.fruit.phase == FruitPhase::Inactive &&
+                 game.fruit.timeCountSteps == 5000u,
+                 "fruit expires at the bounded expiration boundary");
+    game_update(&game);
+    ok &= expect(game.fruit.timeCountSteps == 5000u && !game.fruitExpired,
+                 "expired fruit timer cannot underflow or repeat the expiration event");
+
+    FruitState collisionFruit = game.fruit;
+    collisionFruit.phase = FruitPhase::Visible;
+    ok &= expect(pacman_collides_with_fruit(PacManState{217, 280, Direction::Right,
+                    Direction::Right, Direction::None, 0, 0, 0, 1, 0}, collisionFruit) &&
+                 pacman_collides_with_fruit(PacManState{247, 280, Direction::Left,
+                    Direction::Left, Direction::None, 0, 0, 0, 1, 0}, collisionFruit) &&
+                 pacman_collides_with_fruit(PacManState{232, 280, Direction::Up,
+                    Direction::Up, Direction::None, 0, 0, 0, 1, 0}, collisionFruit) &&
+                 !pacman_collides_with_fruit(PacManState{232, 279, Direction::Down,
+                    Direction::Down, Direction::None, 0, 0, 0, 1, 0}, collisionFruit),
+                 "fruit collision preserves the source strict-X/exact-Y rule");
+
+    prepare_fruit_test_game(&game);
+    game.fruit.phase = FruitPhase::Visible;
+    game.fruit.appearancesTriggered = 1u;
+    game.fruit.scoreValue = 500u;
+    game.fruit.x = 232;
+    game.fruit.y = 280;
+    game.pacman.x = 232;
+    game.pacman.y = 280;
+    game.score = 0u;
+    game_update(&game);
+    ok &= expect(game.fruitConsumed && game.fruitScoreAwarded &&
+                 game.fruit.phase == FruitPhase::Inactive && game.score == 500u,
+                 "fruit collision awards its score once through centralized scoring");
+    game_update(&game);
+    ok &= expect(!game.fruitConsumed && game.score == 500u,
+                 "continued overlap cannot rescore a collected fruit");
+
+    prepare_fruit_test_game(&game);
+    game.fruit.phase = FruitPhase::Visible;
+    game.fruit.appearancesTriggered = 1u;
+    game.fruit.scoreValue = 500u;
+    game.fruit.x = 232;
+    game.fruit.y = 280;
+    game.pacman.x = 232;
+    game.pacman.y = 280;
+    game.score = 9500u;
+    game.lives = kPacManInitialLives;
+    game.lifeAward.thresholdsAwardedMask = 0u;
+    game.lifeAward.awardsGranted = 0u;
+    game.lifeAward.nextThreshold = 10000u;
+    game_update(&game);
+    ok &= expect(game.fruitConsumed && game.score == 10000u && game.lives == 4u &&
+                 game.lifeAward.thresholdsAwardedMask == 1u &&
+                 game.lifeAward.awardsGranted == 1u && game.extraLifeAwarded,
+                 "fruit score crossing 10000 grants the historical extra life");
+
+    prepare_fruit_test_game(&game);
+    game.fruit.phase = FruitPhase::Visible;
+    game.fruit.appearancesTriggered = 1u;
+    game.fruit.timeCountSteps = 100u;
+    game.pacman.x = 64;
+    game.pacman.y = 280;
+    game.ghosts[0].x = 64;
+    game.ghosts[0].y = 280;
+    game.ghosts[0].collisionActive = true;
+    game.suppressGhostCollisionsForValidation = false;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.fruit.phase == FruitPhase::Visible &&
+                 game.fruit.timeCountSteps == 101u,
+                 "ordinary death preserves visible fruit through the collision step");
+    game_update(&game);
+    ok &= expect(game.fruit.timeCountSteps == 101u,
+                 "ordinary death pauses the fruit timer after the collision step");
+    game_reset_level(&game);
+    ok &= expect(game.fruit.phase == FruitPhase::Inactive &&
+                 game.fruit.appearancesTriggered == 0u && game.fruit.fruitType == 1u,
+                 "level transition clears fruit trigger state and selects Level 2");
+
+    game.score = 9999u;
+    game.lives = kPacManInitialLives;
+    game.lifeAward.thresholdsAwardedMask = 0u;
+    game.lifeAward.awardsGranted = 0u;
+    game.lifeAward.nextThreshold = 10000u;
+    ScoreAwardResult noAward = award_score(game, 0u);
+    ok &= expect(noAward.extraLivesAwarded == 0u && game.lives == kPacManInitialLives,
+                 "zero-point scoring does not award an extra life");
+    ScoreAwardResult exact = award_score(game, 1u);
+    ok &= expect(exact.extraLivesAwarded == 1u && game.lives == kPacManInitialLives + 1u &&
+                 game.lifeAward.nextThreshold == 50000u,
+                 "exact 10000 threshold grants one extra life");
+    ScoreAwardResult repeat = award_score(game, 1u);
+    ok &= expect(repeat.extraLivesAwarded == 0u && game.lives == kPacManInitialLives + 1u,
+                 "a crossed threshold cannot award twice");
+    game.score = 0u;
+    game.lives = kPacManInitialLives;
+    game.lifeAward.thresholdsAwardedMask = 0u;
+    game.lifeAward.awardsGranted = 0u;
+    game.lifeAward.nextThreshold = 10000u;
+    ScoreAwardResult jump = award_score(game, 100000u);
+    ok &= expect(jump.extraLivesAwarded == 3u && game.lives == kPacManInitialLives + 3u &&
+                 game.lifeAward.awardsGranted == 3u && game.lifeAward.nextThreshold == 0xFFFFFFFFu,
+                 "one score addition crosses all three historical life thresholds");
+    game.score = 9999u;
+    game.lives = kPacManMaximumLives;
+    game.lifeAward.thresholdsAwardedMask = 0u;
+    game.lifeAward.awardsGranted = 0u;
+    game.lifeAward.nextThreshold = 10000u;
+    award_score(game, 1u);
+    ok &= expect(game.lives == kPacManMaximumLives && game.extraLifeSuppressed,
+                 "life award is bounded at the native maximum without overflow");
+    game.lives = 4u;
+    game.score = 10000u;
+    game.playState = PlayState::Dying;
+    game_update(&game);
+    ok &= expect(game.lives == 4u && game.lifeAward.awardsGranted == 0u,
+                 "death does not clear or duplicate extra-life state");
+    game.playState = PlayState::GameOver;
+    game.fruit.phase = FruitPhase::Visible;
+    ok &= expect(!pacman_collides_with_fruit(game.pacman, game.fruit) ||
+                 game.pacman.y != game.fruit.y,
+                 "Game Over fruit state is non-collidable through the update gate");
+    ok &= expect(game_restart_session(&game) && game.score == 0u &&
+                 game.lives == kPacManInitialLives && game.levelNumber == 1u &&
+                 game.lifeAward.awardsGranted == 0u &&
+                 game.lifeAward.thresholdsAwardedMask == 0u &&
+                 game.fruit.phase == FruitPhase::Inactive &&
+                 game.fruit.appearancesTriggered == 0u,
+                 "new game restart clears fruit and extra-life state");
     return ok;
 }
 
@@ -2435,6 +2645,7 @@ int main() {
     ok &= test_death_lives_and_reset();
     ok &= test_game_over_and_restart();
     ok &= test_level_rules_and_consecutive_progression();
+    ok &= test_fruit_and_extra_life();
     std::cout << (ok ? "PacMan game logic tests PASS\n" : "PacMan game logic tests FAIL\n");
     return ok ? 0 : 1;
 }

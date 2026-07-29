@@ -152,7 +152,7 @@ The values below are taken from `basPacSetUp.bas` and `basPacman.bas`, not infer
 
 `TestCollisions` uses strict center thresholds `Abs(Pacman.Xpos - Ghost.Xpos) < 16` and `Abs(Pacman.Ypos - Ghost.Ypos) < 16`. The native collision helper applies the same rule to active ghosts and never samples rendered pixels; Pink is collision-inactive until it reaches its normal outside-house route.
 
-Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames. The status strip shows the total remaining lives as a number, including zero in Game Over.
+Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames. The compact HUD shows reserve lives (`total - 1`) to match the source's `ShowLives` semantics, including zero in Game Over.
 
 Power pills score 10, disappear, and activate the source-supported per-ghost
 frightened lifecycle. Each eligible ghost has its own level/speed-scaled
@@ -161,6 +161,52 @@ rendering, collision-safe ghost eating, 200/400/800/1600 score progression,
 eyes return/reset behavior, and normal restoration. The exact VB6 evidence and
 source quirks are recorded in
 [HISTORICAL_POWER_PILL_INVESTIGATION.md](HISTORICAL_POWER_PILL_INVESTIGATION.md).
+
+## Fruit and extra-life milestone
+
+The original source contains a complete timer-driven fruit system and explicit
+extra-life crossings. Fruit appears once per level at `4000 / Game.Speed`,
+remains visible until `5000 / Game.Speed`, uses the real `PacPics.bmp`
+cells/masks, collides at the source `(232,280)` rule, and awards `500 * level`
+once. There is no historical fruit score popup. The eight mappings are
+Cherry, Strawberry, Orange, Apple, Melon, Galaxian, Bell, and Key; levels above
+8 safely reuse Key. Extra lives are awarded when score additions cross 10,000,
+50,000, or 100,000, including multiple crossings in one addition. The native
+HUD shows reserve lives (`total - 1`) while the fixed-size game state retains
+total lives.
+
+The source trace, exact coordinates, timer units, death/level quirks, and
+differences from common arcade Pac-Man are in
+[HISTORICAL_FRUIT_AND_EXTRA_LIFE_INVESTIGATION.md](HISTORICAL_FRUIT_AND_EXTRA_LIFE_INVESTIGATION.md).
+
+Run the deterministic suite with:
+
+```powershell
+cmake --build build --target pacman-game-tests
+.\build\pacman-game-tests.exe
+```
+
+Build the isolated hosted fruit proof (never the production package):
+
+```powershell
+cmake -S . -B build-fruit-validation -G Ninja `
+  -DPACMAN_HOSTED_FRUIT_TEST=ON -DPACMAN_ENABLE_DIAGNOSTICS=ON `
+  -DGUIDEXOS_SERVER_ROOT=D:/dev/guideXOSServer -DGUIDEXOS_PACKAGE_ROOT=D:/Apps
+cmake --build build-fruit-validation --target pacman-fruit-validation
+```
+
+Build the isolated QEMU bare-metal fruit proof:
+
+```powershell
+cmake -S . -B build-baremetal-fruit-validation -G Ninja `
+  -DPACMAN_BAREMETAL_FRUIT_VALIDATION=ON -DPACMAN_ENABLE_DIAGNOSTICS=ON `
+  -DGUIDEXOS_SERVER_ROOT=D:/dev/guideXOSServer -DGUIDEXOS_PACKAGE_ROOT=D:/Apps
+cmake --build build-baremetal-fruit-validation --target pacman-baremetal-fruit-validation
+```
+
+Both validation builds use distinct ELF names/packages and compile-time-only
+state preparation. They do not write `D:/Apps/PacMan` and contain no
+production cheat key. Production remains the default `pacman-native` target.
 
 ## Red ghost movement milestone
 
@@ -334,4 +380,4 @@ powershell -ExecutionPolicy Bypass -File tools\validate_hosted_power_pill.ps1
 
 ## Current limitations and next milestone
 
-The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red, Pink, Cyan, and Orange movement, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded score, level progress, per-ghost frightened timers and conditions, blue/flashing frightened rendering, ghost eating and score progression, eyes return/reset, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Status text shows total remaining lives; the VB6 display showed spare-life Pac-Man icons, so this is an intentional text simplification. Collision-versus-pill ordering is input, pill look-ahead/completion, Pac-Man movement/animation, Red, Pink, Cyan, Orange, each timer decrement, then one collision sample; level completion wins over a same-step collision. Focus loss clears held directions and stops movement; new input is required after focus returns. The historical source investigation found no shared Chase/Scatter or equivalent coordinated ghost-mode schedule; the evidence and exact source boundary are recorded in [HISTORICAL_GHOST_AI_INVESTIGATION.md](HISTORICAL_GHOST_AI_INVESTIGATION.md). The source-backed power-pill evidence is recorded in [HISTORICAL_POWER_PILL_INVESTIGATION.md](HISTORICAL_POWER_PILL_INVESTIGATION.md). Sounds, fruit, extra lives, and two-player behavior remain out of scope. The hosted amd64 experimental executor remains the supported runtime; bare-metal Native ELF execution is not claimed. The next recommended milestone is historically supported fruit/sound/UI behavior only if those source-backed systems are explicitly brought into scope.
+The interactive Native ELF now supports Pac-Man movement under the arrow keys, deterministic Red, Pink, Cyan, and Orange movement, fixed-step simulation, buffered turns, wall blocking, tunnel wrapping, mutable normal/power pills, bounded centralized scoring, source-supported fruit, explicit extra-life thresholds, level progress, per-ghost frightened timers and conditions, blue/flashing frightened rendering, ghost eating and score progression, eyes return/reset, center-based collision, a one-life-per-overlap death state, actor reset, Game Over, and Enter/Space session restart. Collision-versus-pill ordering is input, pill look-ahead/completion, Pac-Man movement/animation, Red, Pink, Cyan, Orange, each timer decrement, ghost collision, fruit collision, fruit timer, then state/render dirty work; level completion retains its existing final-pill early return. Focus loss clears held directions and stops movement; new input is required after focus returns. The historical source investigation found no shared Chase/Scatter or equivalent coordinated ghost-mode schedule; the evidence and exact source boundary are recorded in [HISTORICAL_GHOST_AI_INVESTIGATION.md](HISTORICAL_GHOST_AI_INVESTIGATION.md). The source-backed power-pill evidence is recorded in [HISTORICAL_POWER_PILL_INVESTIGATION.md](HISTORICAL_POWER_PILL_INVESTIGATION.md), and fruit/life evidence is recorded in [HISTORICAL_FRUIT_AND_EXTRA_LIFE_INVESTIGATION.md](HISTORICAL_FRUIT_AND_EXTRA_LIFE_INVESTIGATION.md). Sounds, two-player behavior, and unrelated cabinet systems remain out of scope. The hosted amd64 experimental executor and the validated QEMU bare-metal Native ELF path remain supported runtimes. The next recommended milestone is historically supported sound support and final session/HUD polish.

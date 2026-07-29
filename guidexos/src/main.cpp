@@ -39,6 +39,12 @@
 #ifndef PACMAN_BAREMETAL_LEVEL_VALIDATION
 #define PACMAN_BAREMETAL_LEVEL_VALIDATION 0
 #endif
+#ifndef PACMAN_HOSTED_FRUIT_TEST
+#define PACMAN_HOSTED_FRUIT_TEST 0
+#endif
+#ifndef PACMAN_BAREMETAL_FRUIT_VALIDATION
+#define PACMAN_BAREMETAL_FRUIT_VALIDATION 0
+#endif
 
 extern "C" void* memset(void* destination, int value, uint64_t bytes) {
     uint8_t* output = static_cast<uint8_t*>(destination);
@@ -122,7 +128,7 @@ static gx_result present(gx_app_context* ctx, gx_handle window) {
         kPacManWidth * kPacManFrameHeight * 4u);
 }
 
-#if PACMAN_HOSTED_DANGER_TEST || PACMAN_BAREMETAL_LEVEL_VALIDATION
+#if PACMAN_HOSTED_DANGER_TEST || PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_LEVEL_VALIDATION || PACMAN_BAREMETAL_FRUIT_VALIDATION
 static void append_frame_text(char* message, uint32_t* index, uint32_t capacity, const char* text) {
     if (!message || !index || !text) return;
     for (uint32_t i = 0; text[i] && *index + 1u < capacity; ++i) message[(*index)++] = text[i];
@@ -231,6 +237,26 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_number(message, &index, sizeof(message), game_frightened_flash_threshold(game));
     append_frame_text(message, &index, sizeof(message), " remaining=");
     append_frame_number(message, &index, sizeof(message), game.level.totalConsumablesRemaining);
+    append_frame_text(message, &index, sizeof(message), " fruitPhase=");
+    append_frame_text(message, &index, sizeof(message), fruit_phase_name(game.fruit.phase));
+    append_frame_text(message, &index, sizeof(message), " fruitType=");
+    append_frame_number(message, &index, sizeof(message), game.fruit.fruitType);
+    append_frame_text(message, &index, sizeof(message), " fruitX=");
+    append_frame_signed_number(message, &index, sizeof(message), game.fruit.x);
+    append_frame_text(message, &index, sizeof(message), " fruitY=");
+    append_frame_signed_number(message, &index, sizeof(message), game.fruit.y);
+    append_frame_text(message, &index, sizeof(message), " fruitTimer=");
+    append_frame_number(message, &index, sizeof(message), game.fruit.visibleStepsRemaining);
+    append_frame_text(message, &index, sizeof(message), " fruitTimeCount=");
+    append_frame_number(message, &index, sizeof(message), game.fruit.timeCountSteps);
+    append_frame_text(message, &index, sizeof(message), " fruitAppearance=");
+    append_frame_number(message, &index, sizeof(message), game.fruit.appearancesTriggered);
+    append_frame_text(message, &index, sizeof(message), " lifeAwardMask=");
+    append_frame_number(message, &index, sizeof(message), game.lifeAward.thresholdsAwardedMask);
+    append_frame_text(message, &index, sizeof(message), " lifeAwards=");
+    append_frame_number(message, &index, sizeof(message), game.lifeAward.awardsGranted);
+    append_frame_text(message, &index, sizeof(message), " nextLife=");
+    append_frame_number(message, &index, sizeof(message), game.lifeAward.nextThreshold);
     message[index] = '\0';
     ctx->host->log(ctx, message);
 }
@@ -257,7 +283,7 @@ static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacI
         ++g_pacbmFrameMarkers;
     }
 #endif
-#if PACMAN_HOSTED_DANGER_TEST || PACMAN_BAREMETAL_LEVEL_VALIDATION
+#if PACMAN_HOSTED_DANGER_TEST || PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_LEVEL_VALIDATION || PACMAN_BAREMETAL_FRUIT_VALIDATION
     log_validation_frame(ctx, window, game, frameSequence, result);
 #endif
     return result == GX_OK;
@@ -352,6 +378,24 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (!ctx || !ctx->host || !ctx->host->log) return;
     if (game.normalPillConsumed) ctx->host->log(ctx, "PacMan normal pill consumed");
     if (game.powerPillConsumed) ctx->host->log(ctx, "PacMan power pill consumed");
+    if (game.fruitTriggerReached) ctx->host->log(ctx, "PacMan fruit trigger reached");
+    if (game.fruitSpawned) {
+        ctx->host->log(ctx, "PacMan fruit spawned");
+        log_game_value(ctx, "PacMan fruit type: ", game.fruit.fruitType);
+        log_game_value(ctx, "PacMan fruit score: ", game.fruit.scoreValue);
+        log_game_value(ctx, "PacMan fruit timer initialized: ", game.fruit.visibleStepsRemaining);
+    }
+    if (game.fruitExpired) ctx->host->log(ctx, "PacMan fruit expired");
+    if (game.fruitConsumed) ctx->host->log(ctx, "PacMan fruit consumed");
+    if (game.fruitScoreAwarded) log_game_value(ctx, "PacMan fruit score awarded: ", game.fruitScoreAwardedValue);
+    if (game.fruitReset) {
+        if (game.sessionRestarted) ctx->host->log(ctx, "PacMan fruit reset on new game");
+        else if (game.levelReset || game.levelCompleteEntered) ctx->host->log(ctx, "PacMan fruit reset on level transition");
+        else ctx->host->log(ctx, "PacMan fruit reset");
+    }
+    if (game.extraLifeThresholdCrossed) ctx->host->log(ctx, "PacMan extra-life threshold crossed");
+    if (game.extraLifeAwarded) log_game_value(ctx, "PacMan extra life awarded: ", game.extraLifeAwardsThisUpdate);
+    if (game.extraLifeSuppressed) ctx->host->log(ctx, "PacMan extra life suppressed at maximum lives");
     if (game.powerPillEncounterReset) ctx->host->log(ctx, "PacMan power-pill encounter reset");
     if (game.scoreChanged) log_game_value(ctx, "PacMan score updated: ", game.score);
     if (game.normalPillConsumed || game.powerPillConsumed) {
@@ -411,6 +455,143 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     (void)game;
 #endif
 }
+
+#if PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
+struct FruitValidationTrace {
+    uint8_t stage;
+};
+
+static FruitValidationTrace g_fruitValidationTrace = {0};
+
+static void fruit_validation_log(gx_app_context* ctx, const char* text) {
+    if (ctx && ctx->host && ctx->host->log && text) ctx->host->log(ctx, text);
+}
+
+static void prepare_fruit_validation_state(GameState* game) {
+    if (!game) return;
+    game->pacman.x = 232;
+    game->pacman.y = 280;
+    game->pacman.direction = Direction::None;
+    game->pacman.facingDirection = Direction::Right;
+    game->pacman.requestedDirection = Direction::None;
+    game->pacman.offset = 0;
+    game->pacman.speed = 0;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game->ghosts[index].speed = 0;
+        game->ghosts[index].collisionActive = false;
+    }
+    game->suppressGhostCollisionsForValidation = true;
+    game->fruit.timeCountSteps = kPacManFruitTriggerTime /
+        sanitize_game_speed(game->gameSpeed) - 1u;
+    game->visualDirty = true;
+}
+
+static void prepare_fruit_expiration_validation_state(GameState* game) {
+    if (!game) return;
+    prepare_fruit_validation_state(game);
+    game->pacman.x = 64;
+    game->pacman.y = 264;
+}
+
+static bool fruit_validation_prepare(gx_app_context* ctx, GameState* game) {
+    if (!game || game->playState != PlayState::Playing) return false;
+    if (g_fruitValidationTrace.stage == 0u) {
+        game->score = 9500u;
+        game->lives = kPacManInitialLives;
+        game->lifeAward.thresholdsAwardedMask = 0u;
+        game->lifeAward.awardsGranted = 0u;
+        game->lifeAward.nextThreshold = 10000u;
+        prepare_fruit_validation_state(game);
+        g_fruitValidationTrace.stage = 1u;
+        fruit_validation_log(ctx, "FRUITVAL PREPARE_SPAWN level=1 score=9500");
+        return true;
+    }
+    if (g_fruitValidationTrace.stage == 3u) {
+        prepare_fruit_expiration_validation_state(game);
+        g_fruitValidationTrace.stage = 4u;
+        fruit_validation_log(ctx, "FRUITVAL PREPARE_LEVEL4_EXPIRATION");
+        return true;
+    }
+    if (g_fruitValidationTrace.stage == 5u) {
+        game->levelNumber = 4u;
+        game_reset_level(game);
+        g_fruitValidationTrace.stage = 6u;
+        fruit_validation_log(ctx, "FRUITVAL RESET_TO_LEVEL5");
+        return true;
+    }
+    if (g_fruitValidationTrace.stage == 6u) {
+        prepare_fruit_expiration_validation_state(game);
+        g_fruitValidationTrace.stage = 7u;
+        fruit_validation_log(ctx, "FRUITVAL PREPARE_LEVEL5_EXPIRATION");
+        return true;
+    }
+    if (g_fruitValidationTrace.stage == 8u) {
+        game->levelNumber = 7u;
+        game_reset_level(game);
+        g_fruitValidationTrace.stage = 9u;
+        fruit_validation_log(ctx, "FRUITVAL RESET_TO_LEVEL8");
+        return true;
+    }
+    if (g_fruitValidationTrace.stage == 9u) {
+        prepare_fruit_expiration_validation_state(game);
+        g_fruitValidationTrace.stage = 10u;
+        fruit_validation_log(ctx, "FRUITVAL PREPARE_LEVEL8_EXPIRATION");
+        return true;
+    }
+    return false;
+}
+
+static void fruit_validation_observe(gx_app_context* ctx, GameState* game) {
+    if (!game) return;
+    if (g_fruitValidationTrace.stage == 1u && game->fruitSpawned) {
+        // Keep the spawned fruit visible for at least one presented frame.
+        // The source collision is resolved before the timer advances, so a
+        // Pac-Man centered on the fruit would otherwise collect it before a
+        // hosted compositor checkpoint can observe the visible sprite.
+        game->pacman.x = 64;
+        game->pacman.y = 264;
+        game->pacman.direction = Direction::None;
+        game->pacman.requestedDirection = Direction::None;
+        g_fruitValidationTrace.stage = 2u;
+        fruit_validation_log(ctx, "FRUITVAL SPAWN_OBSERVED");
+    } else if (g_fruitValidationTrace.stage == 2u && game->fruit.phase == FruitPhase::Visible) {
+        game->pacman.x = kPacManFruitCenterX;
+        game->pacman.y = kPacManFruitCenterY;
+        game->pacman.direction = Direction::None;
+        game->pacman.requestedDirection = Direction::None;
+        g_fruitValidationTrace.stage = 12u;
+    } else if (g_fruitValidationTrace.stage == 12u && game->fruitConsumed) {
+        fruit_validation_log(ctx, "FRUITVAL COLLECTION_OBSERVED");
+        if (game->extraLifeAwarded && game->score == 10000u && game->lives == 4u &&
+            game->lifeAward.awardsGranted == 1u) {
+            fruit_validation_log(ctx, "FRUITVAL EXTRA_LIFE_OBSERVED");
+        } else if (game->score == 10000u && game->lives == 3u) {
+            fruit_validation_log(ctx, "FRUITVAL EXTRA_LIFE_STATE_SCORE_OK_LIVES_LOW");
+        } else if (game->score == 9500u && game->lives == 3u) {
+            fruit_validation_log(ctx, "FRUITVAL EXTRA_LIFE_STATE_SCORE_UNCHANGED");
+        } else if (game->score == 500u && game->lives == 3u) {
+            fruit_validation_log(ctx, "FRUITVAL EXTRA_LIFE_STATE_SCORE_FRUIT_ONLY");
+        } else {
+            fruit_validation_log(ctx, "FRUITVAL EXTRA_LIFE_STATE_FAIL");
+        }
+        // Select Level 4 through the normal level-reset function.  The direct
+        // level value is validation preparation only; no fruit or life award
+        // is assigned by the harness.
+        game->levelNumber = 3u;
+        game_reset_level(game);
+        g_fruitValidationTrace.stage = 3u;
+    } else if (g_fruitValidationTrace.stage == 4u && game->fruitExpired) {
+        fruit_validation_log(ctx, "FRUITVAL LEVEL4_EXPIRATION_OBSERVED");
+        g_fruitValidationTrace.stage = 5u;
+    } else if (g_fruitValidationTrace.stage == 7u && game->fruitExpired) {
+        fruit_validation_log(ctx, "FRUITVAL LEVEL5_EXPIRATION_OBSERVED");
+        g_fruitValidationTrace.stage = 8u;
+    } else if (g_fruitValidationTrace.stage == 10u && game->fruitExpired) {
+        fruit_validation_log(ctx, "FRUITVAL LEVEL8_EXPIRATION_OBSERVED");
+        g_fruitValidationTrace.stage = 11u;
+    }
+}
+#endif
 
 #if PACMAN_BAREMETAL_LEVEL_VALIDATION
 struct BaremetalLevelTrace {
@@ -1015,6 +1196,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     configure_hosted_power_pill_test(&game);
     ctx->host->log(ctx, "PacMan hosted power-pill validation enabled");
 #endif
+#if PACMAN_HOSTED_FRUIT_TEST
+    ctx->host->log(ctx, "PacMan hosted fruit and extra-life validation enabled");
+#endif
+#if PACMAN_BAREMETAL_FRUIT_VALIDATION
+    ctx->host->log(ctx, "PACMAN_BAREMETAL_FRUIT_VALIDATION=ON");
+    ctx->host->log(ctx, "PacMan bare-metal fruit and extra-life validation enabled");
+#endif
 
     gx_handle window = 0;
     gx_result windowResult = GX_ERROR_UNSUPPORTED;
@@ -1132,6 +1320,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 
         uint32_t updates = 0;
         while (accumulatorMs >= kFixedStepMs && updates < kMaxCatchUpSteps) {
+#if PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
+            fruit_validation_prepare(ctx, &game);
+#endif
 #if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
             if (apply_hosted_danger_test_placement(&game, &hostedDangerPlacementCount)) {
                 log_game_value(ctx, "PacMan hosted danger overlap placed: ", hostedDangerPlacementCount);
@@ -1279,6 +1470,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 #if PACMAN_BAREMETAL_LEVEL_VALIDATION
             baremetal_level_observe_update(ctx, window, game, currentTicks, elapsedMs,
                                             accumulatorMs, updates);
+#endif
+#if PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
+            fruit_validation_observe(ctx, &game);
 #endif
             log_game_events(ctx, game);
         }

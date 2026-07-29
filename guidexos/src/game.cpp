@@ -30,6 +30,20 @@ static int absolute_value(int value) {
 static const uint32_t kPinkHouseBounceSteps = 2u;
 static const int kOrangeTargetThresholdTiles = 4;
 static const int kOrangeProjectionTiles = 12;
+static const uint8_t kPacManExtraLifeThresholdCount = 3u;
+
+// Keep the historical milestones as immediates in the scoring routine.  The
+// bare-metal native loader is intentionally small; avoiding an address-based
+// lookup table here keeps threshold crossing independent of read-only-data
+// relocation details while preserving the exact source values.
+static uint32_t pacman_extra_life_threshold(uint8_t index) {
+    switch (index) {
+    case 0: return 10000u;
+    case 1: return 50000u;
+    case 2: return 100000u;
+    }
+    return 0xFFFFFFFFu;
+}
 
 static uint32_t effective_game_speed(const GameState& game) {
     return sanitize_game_speed(game.gameSpeed);
@@ -63,6 +77,21 @@ static void clear_power_event_flags(GameState* game) {
         game->ghostEatScoreAwarded[index] = false;
         game->ghostEatScore[index] = 0;
     }
+}
+
+static void clear_fruit_event_flags(GameState* game) {
+    if (!game) return;
+    game->fruitTriggerReached = false;
+    game->fruitSpawned = false;
+    game->fruitExpired = false;
+    game->fruitConsumed = false;
+    game->fruitScoreAwarded = false;
+    game->fruitScoreAwardedValue = 0;
+    game->fruitReset = false;
+    game->extraLifeThresholdCrossed = false;
+    game->extraLifeAwarded = false;
+    game->extraLifeSuppressed = false;
+    game->extraLifeAwardsThisUpdate = 0;
 }
 
 static int clamp_int(int value, int minimum, int maximum) {
@@ -241,6 +270,20 @@ static void reset_actor_positions(GameState* game) {
     game->deathAnimationFrame = 0;
 }
 
+static void reset_fruit_for_level(GameState* game) {
+    if (!game) return;
+    const FruitRules rules = calculate_fruit_rules(game->levelNumber);
+    game->fruit.phase = FruitPhase::Inactive;
+    game->fruit.fruitType = rules.type;
+    game->fruit.appearancesTriggered = 0;
+    game->fruit.timeCountSteps = 0;
+    game->fruit.visibleStepsRemaining = 0;
+    game->fruit.popupStepsRemaining = 0;
+    game->fruit.scoreValue = rules.score;
+    game->fruit.x = rules.x;
+    game->fruit.y = rules.y;
+}
+
 static bool ghost_can_receive_power_pill(const GhostState& ghost) {
     return ghost.active && ghost.releaseState == GhostReleaseState::Normal &&
         (ghost.condition == GhostCondition::Normal || ghost.condition == GhostCondition::Frightened);
@@ -393,12 +436,86 @@ static void consume_target_pill(GameState* game) {
         // frmPacMan adds the level bonus in the same one-shot completion
         // branch, before ResetLevel/DefaultPositions are called.
         add_score(*game, kPacManLevelCompleteBonus);
+        // The source rebuilds the clean maze immediately after completion,
+        // which removes the fruit artwork.  Native's bounded LevelComplete
+        // presentation therefore clears the logical fruit at the same
+        // transition boundary.
+        reset_fruit_for_level(game);
+        game->fruitSpawned = false;
+        game->fruitReset = true;
         clear_level_completion_combat_state(game);
         game->playState = PlayState::LevelComplete;
         game->levelCompleteStepsRemaining = kPacManLevelCompleteDelaySteps;
         ++game->levelCompleteTransitions;
         game->levelCompleteEntered = true;
     }
+}
+
+static void spawn_fruit(GameState* game) {
+    if (!game || game->fruit.appearancesTriggered != 0u) return;
+    const FruitRules rules = calculate_fruit_rules(game->levelNumber);
+    game->fruit.phase = FruitPhase::Visible;
+    game->fruit.fruitType = rules.type;
+    game->fruit.appearancesTriggered = 1;
+    game->fruit.scoreValue = rules.score;
+    game->fruit.x = rules.x;
+    game->fruit.y = rules.y;
+    game->fruit.visibleStepsRemaining = rules.expirationTimeSteps >= rules.triggerTimeSteps
+        ? rules.expirationTimeSteps - rules.triggerTimeSteps : 0u;
+    game->fruit.popupStepsRemaining = 0;
+    game->fruitSpawned = true;
+    game->visualDirty = true;
+}
+
+static void update_fruit_timer(GameState* game) {
+    if (!game) return;
+    const FruitRules rules = calculate_fruit_rules(game->levelNumber);
+    const uint32_t speed = effective_game_speed(*game);
+    const uint32_t triggerTime = rules.triggerTimeSteps / speed;
+    const uint32_t expirationTime = rules.expirationTimeSteps / speed;
+
+    // frmPacMan advances TimeCount only while the keyboard timer is enabled.
+    // Native reaches this routine only in Playing, so death, Ready,
+    // LevelComplete, and GameOver pause the deterministic timer.
+    if (game->fruit.phase == FruitPhase::Visible &&
+        game->fruit.timeCountSteps >= expirationTime) {
+        game->fruit.phase = FruitPhase::Inactive;
+        game->fruit.visibleStepsRemaining = 0;
+        game->fruitExpired = true;
+        game->visualDirty = true;
+        return;
+    }
+
+    if (game->fruit.timeCountSteps < expirationTime) ++game->fruit.timeCountSteps;
+    if (game->fruit.timeCountSteps > expirationTime) game->fruit.timeCountSteps = expirationTime;
+
+    if (game->fruit.timeCountSteps >= triggerTime && triggerTime != 0u) {
+        game->fruitTriggerReached = game->fruit.appearancesTriggered == 0u;
+        if (game->fruit.phase == FruitPhase::Inactive &&
+            game->fruit.appearancesTriggered == 0u) {
+            spawn_fruit(game);
+        }
+    }
+    if (game->fruit.phase == FruitPhase::Visible) {
+        game->fruit.visibleStepsRemaining = expirationTime > game->fruit.timeCountSteps
+            ? expirationTime - game->fruit.timeCountSteps : 0u;
+    }
+}
+
+static void resolve_fruit_collision(GameState* game) {
+    if (!game || game->fruit.phase != FruitPhase::Visible ||
+        !pacman_collides_with_fruit(game->pacman, game->fruit)) return;
+    const uint32_t score = game->fruit.scoreValue;
+    game->fruit.phase = FruitPhase::Inactive;
+    game->fruit.visibleStepsRemaining = 0;
+    game->fruitConsumed = true;
+    game->fruitScoreAwarded = true;
+    game->fruitScoreAwardedValue = score;
+    // Source TestCollisions clears FruitHere before AddScore.  Keeping the
+    // state non-visible before scoring prevents a repeated overlap from
+    // awarding the same fruit twice.
+    award_score(*game, score);
+    game->visualDirty = true;
 }
 
 static void enter_dying(GameState* game);
@@ -1330,7 +1447,7 @@ bool orange_uses_far_target(const PacManState& pacman, const GhostState& orange)
 }
 
 GhostTarget calculate_orange_target(const GameState& game, const PacManState& pacman,
-                                    const GhostState& orange) {
+                                     const GhostState& orange) {
     (void)game;
     // basGhostAI.bas stores Pac-Man and Orange positions as integer tile
     // coordinates, and Ghost(4) projects only when their Manhattan tile
@@ -1360,6 +1477,58 @@ GhostTarget calculate_orange_target(const GameState& game, const PacManState& pa
     return GhostTarget{static_cast<int>(targetX), static_cast<int>(targetY)};
 }
 
+FruitRules calculate_fruit_rules(uint32_t level) {
+    const uint32_t historicalLevel = normalize_level_number(level);
+    FruitRules rules{};
+    rules.type = static_cast<uint8_t>(historicalLevel - 1u);
+    rules.score = historicalLevel * 500u;
+    rules.triggerTimeSteps = kPacManFruitTriggerTime;
+    rules.expirationTimeSteps = kPacManFruitExpirationTime;
+    rules.visibleDurationSteps = kPacManFruitExpirationTime - kPacManFruitTriggerTime;
+    rules.x = kPacManFruitCenterX;
+    rules.y = kPacManFruitCenterY;
+
+    // frmPacMan uses ((Level - 1) Mod 4) for the source column and
+    // ((Level - 1) \ 4) * 32 + 256 for the source row.  PacPics.bmp contains
+    // the corresponding transparency masks 128 pixels to the right.
+    const int sourceX = static_cast<int>((historicalLevel - 1u) % 4u) * 32;
+    const int sourceY = static_cast<int>((historicalLevel - 1u) / 4u) * 32 + 256;
+    rules.sprite = SpriteRect{sourceX, sourceY, 32, 32};
+    rules.mask = SpriteRect{sourceX + 128, sourceY, 32, 32};
+    return rules;
+}
+
+const char* fruit_type_name(uint8_t fruitType) {
+    switch (fruitType) {
+    case 0: return "cherry";
+    case 1: return "strawberry";
+    case 2: return "orange";
+    case 3: return "apple";
+    case 4: return "melon";
+    case 5: return "galaxian";
+    case 6: return "bell";
+    case 7: return "key";
+    default: return "unknown";
+    }
+}
+
+const char* fruit_phase_name(FruitPhase phase) {
+    switch (phase) {
+    case FruitPhase::Inactive: return "inactive";
+    case FruitPhase::Visible: return "visible";
+    case FruitPhase::ScorePopup: return "score-popup";
+    }
+    return "unknown";
+}
+
+bool pacman_collides_with_fruit(const PacManState& pacman, const FruitState& fruit) {
+    // The VB6 source uses Abs(Pacman.Xpos - 232) < 16 and an exact Ypos = 280
+    // comparison, not a rendered-pixel or two-dimensional rectangle test.
+    return fruit.phase == FruitPhase::Visible &&
+        absolute_value(pacman.x - kPacManFruitCenterX) < 16 &&
+        pacman.y == kPacManFruitCenterY;
+}
+
 void game_initialize(GameState* game) {
     if (!game) return;
     game->gameSpeed = 1;
@@ -1372,6 +1541,10 @@ void game_initialize(GameState* game) {
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
+    reset_fruit_for_level(game);
+    game->lifeAward.thresholdsAwardedMask = 0;
+    game->lifeAward.awardsGranted = 0;
+    game->lifeAward.nextThreshold = 10000u;
     game->ghostEatChain = 0;
     game->frightenedFlashPhase = 0;
     game->lives = kPacManInitialLives;
@@ -1401,6 +1574,13 @@ void game_initialize(GameState* game) {
     game->orangeReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
+    game->fruitTriggerReached = false;
+    game->fruitSpawned = false;
+    game->fruitExpired = false;
+    game->fruitConsumed = false;
+    game->fruitScoreAwarded = false;
+    game->fruitScoreAwardedValue = 0;
+    game->fruitReset = false;
     game->scoreChanged = false;
     game->levelCompleteEntered = false;
     game->levelReset = false;
@@ -1418,11 +1598,62 @@ void game_initialize(GameState* game) {
     game->simulationSteps = 0;
 }
 
-void add_score(GameState& game, uint32_t points) {
+ScoreAwardResult award_score(GameState& game, uint32_t points) {
+    // Centralized scoring owns both score saturation and milestone crossing.
+    ScoreAwardResult result{};
+    result.previousScore = game.score;
+    result.newScore = game.score;
+    result.saturated = false;
+    result.extraLivesAwarded = 0;
+
     const uint32_t maximum = 0xFFFFFFFFu;
-    if (maximum - game.score < points) game.score = maximum;
-    else game.score += points;
+    if (maximum - game.score < points) {
+        game.score = maximum;
+        result.saturated = true;
+    } else {
+        game.score += points;
+    }
+    result.newScore = game.score;
     game.scoreChanged = true;
+
+    // basPacSetUp.bas checks the three historical crossings independently.
+    // This deliberately permits one large score award to grant more than one
+    // life, while the mask makes each threshold one-shot for the session.
+    if (points != 0u && game.playState != PlayState::GameOver) {
+        for (uint8_t index = 0; index < kPacManExtraLifeThresholdCount; ++index) {
+            const uint32_t threshold = pacman_extra_life_threshold(index);
+            const uint8_t bit = static_cast<uint8_t>(1u << index);
+            if (result.previousScore < threshold && result.newScore >= threshold &&
+                (game.lifeAward.thresholdsAwardedMask & bit) == 0u) {
+                game.lifeAward.thresholdsAwardedMask =
+                    static_cast<uint8_t>(game.lifeAward.thresholdsAwardedMask | bit);
+                game.extraLifeThresholdCrossed = true;
+                if (game.lives < kPacManMaximumLives) {
+                    ++game.lives;
+                    ++game.lifeAward.awardsGranted;
+                    ++result.extraLivesAwarded;
+                    ++game.extraLifeAwardsThisUpdate;
+                    game.extraLifeAwarded = true;
+                } else {
+                    game.extraLifeSuppressed = true;
+                }
+            }
+        }
+    }
+
+    game.lifeAward.nextThreshold = 0xFFFFFFFFu;
+    for (uint8_t index = 0; index < kPacManExtraLifeThresholdCount; ++index) {
+        const uint8_t bit = static_cast<uint8_t>(1u << index);
+        if ((game.lifeAward.thresholdsAwardedMask & bit) == 0u) {
+            game.lifeAward.nextThreshold = pacman_extra_life_threshold(index);
+            break;
+        }
+    }
+    return result;
+}
+
+void add_score(GameState& game, uint32_t points) {
+    (void)award_score(game, points);
 }
 
 void game_reset_level(GameState* game) {
@@ -1432,6 +1663,7 @@ void game_reset_level(GameState* game) {
         ? oldLevel + 1u : kPacManHistoricalMaximumLevel;
     level_initialize(&game->level);
     reset_actor_positions(game);
+    reset_fruit_for_level(game);
     game->ghosts[0].targetX = game->pacman.x;
     game->ghosts[0].targetY = game->pacman.y;
     const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
@@ -1450,6 +1682,7 @@ void game_reset_level(GameState* game) {
     game->pacman.requestedDirection = Direction::None;
     game->visualDirty = true;
     game->levelReset = true;
+    game->fruitReset = true;
     game->actorReset = true;
     game->readyEntered = true;
     game->powerPillEncounterReset = true;
@@ -1468,6 +1701,10 @@ bool game_restart_session(GameState* game) {
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
+    reset_fruit_for_level(game);
+    game->lifeAward.thresholdsAwardedMask = 0;
+    game->lifeAward.awardsGranted = 0;
+    game->lifeAward.nextThreshold = 10000u;
     game->ghostEatChain = 0;
     game->frightenedFlashPhase = 0;
     game->lives = kPacManInitialLives;
@@ -1497,6 +1734,13 @@ bool game_restart_session(GameState* game) {
     game->orangeReleaseCompleted = false;
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
+    game->fruitTriggerReached = false;
+    game->fruitSpawned = false;
+    game->fruitExpired = false;
+    game->fruitConsumed = false;
+    game->fruitScoreAwarded = false;
+    game->fruitScoreAwardedValue = 0;
+    game->fruitReset = true;
     game->scoreChanged = false;
     game->levelCompleteEntered = false;
     game->levelReset = false;
@@ -1580,6 +1824,7 @@ void game_update(GameState* game) {
     game->readyEntered = false;
     game->gameplayResumed = false;
     clear_power_event_flags(game);
+    clear_fruit_event_flags(game);
 
     if (!game->focused) return;
 
@@ -1659,8 +1904,8 @@ void game_update(GameState* game) {
 
     // Update ordering is explicit: Pac-Man input and pill look-ahead, Pac-Man
     // movement/animation, Red, Pink, Cyan, Orange (with each ghost's timer
-    // decremented at the historical end of its own AI pass), then one
-    // collision sample.
+    // decremented at the historical end of its own AI pass), ghost collision,
+    // fruit collision, fruit timer/trigger, then the state/timer advance.
     // Cyan observes Red's post-move position at this point; the source-
     // faithful Cyan target currently does not consume that position. Orange
     // observes Pac-Man after movement and the preceding ghosts after their
@@ -1674,6 +1919,8 @@ void game_update(GameState* game) {
     update_orange_ghost(game);
     advance_power_pill_timer(game, &game->ghosts[3]);
     if (!game->suppressGhostCollisionsForValidation) resolve_ghost_collisions(game);
+    resolve_fruit_collision(game);
+    update_fruit_timer(game);
     ++game->frightenedFlashPhase;
     game->frightenedFlashPhase %= 16u;
     ++game->simulationSteps;

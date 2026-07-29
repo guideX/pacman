@@ -1,0 +1,21 @@
+# ninja log v7
+4	118	8070334069017019	native-objects/bitmap_loader.o	af2636af91fdb367
+4	118	8070334069017019	D:/dev/pacman/guidexos/build-fruit-validation/native-objects/bitmap_loader.o	af2636af91fdb367
+119	222	8070334070092120	native-objects/level.o	5ad445e5170b741a
+119	222	8070334070092120	D:/dev/pacman/guidexos/build-fruit-validation/native-objects/level.o	5ad445e5170b741a
+12	280	8070334070668182	native-objects/game.o	5ae1f5c8b8885a24
+12	280	8070334070668182	D:/dev/pacman/guidexos/build-fruit-validation/native-objects/game.o	5ae1f5c8b8885a24
+222	325	8070334071098384	native-objects/level_rules.o	61a214e22c2cbd04
+222	325	8070334071098384	D:/dev/pacman/guidexos/build-fruit-validation/native-objects/level_rules.o	61a214e22c2cbd04
+5	181	8070341912698701	native-objects/main.o	91a434da054a7554
+5	181	8070341912698701	D:/dev/pacman/guidexos/build-fruit-validation/native-objects/main.o	91a434da054a7554
+326	420	8070334072044988	native-objects/renderer.o	a1ea6e9889d84cd7
+326	420	8070334072044988	D:/dev/pacman/guidexos/build-fruit-validation/native-objects/renderer.o	a1ea6e9889d84cd7
+182	282	8070341913740062	D:/dev/pacman/guidexos/bin/amd64/pacman-fruit-validation.elf	a134c93240a3e0ec
+282	574	8070341913862713	CMakeFiles/pacman-fruit-validation.util	1abef45f65e4f03d
+7	223	8070353932021524	build.ninja	f5bcdfa1cd101b44
+7	223	8070353932021524	D:/dev/pacman/guidexos/build-fruit-validation/cmake_install.cmake	f5bcdfa1cd101b44
+3	159	8070353933778470	native-objects/main.o	91a434da054a7554
+3	159	8070353933778470	D:/dev/pacman/guidexos/build-fruit-validation/native-objects/main.o	91a434da054a7554
+159	255	8070353934807574	D:/dev/pacman/guidexos/bin/amd64/pacman-fruit-validation.elf	a134c93240a3e0ec
+256	509	8070353934908291	CMakeFiles/pacman-fruit-validation.util	1abef45f65e4f03d

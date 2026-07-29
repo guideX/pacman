@@ -1,0 +1,4 @@
+D:/dev/pacman/guidexos/build-fruit-validation/CMakeFiles/pacman-fruit-validation.dir
+D:/dev/pacman/guidexos/build-fruit-validation/CMakeFiles/pacman-game-tests.dir
+D:/dev/pacman/guidexos/build-fruit-validation/CMakeFiles/edit_cache.dir
+D:/dev/pacman/guidexos/build-fruit-validation/CMakeFiles/rebuild_cache.dir

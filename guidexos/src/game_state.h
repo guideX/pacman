@@ -40,6 +40,30 @@ struct PacManState {
     int mouthSpeed;
 };
 
+enum class FruitPhase : uint8_t {
+    Inactive,
+    Visible,
+    ScorePopup
+};
+
+struct FruitState {
+    FruitPhase phase;
+    uint8_t fruitType;
+    uint8_t appearancesTriggered;
+    uint32_t timeCountSteps;
+    uint32_t visibleStepsRemaining;
+    uint32_t popupStepsRemaining;
+    uint32_t scoreValue;
+    int x;
+    int y;
+};
+
+struct LifeAwardState {
+    uint8_t thresholdsAwardedMask;
+    uint8_t awardsGranted;
+    uint32_t nextThreshold;
+};
+
 enum class GhostKind : uint8_t {
     Red = 0,
     Pink = 1,
@@ -95,6 +119,8 @@ struct GameState {
     GhostState ghosts[4];
     LevelState level;
     uint32_t score;
+    FruitState fruit;
+    LifeAwardState lifeAward;
     uint32_t levelNumber;
     uint32_t gameSpeed;
     uint8_t ghostEatChain;
@@ -127,7 +153,18 @@ struct GameState {
     bool orangeReleaseCompleted;
     bool normalPillConsumed;
     bool powerPillConsumed;
+    bool fruitTriggerReached;
+    bool fruitSpawned;
+    bool fruitExpired;
+    bool fruitConsumed;
+    bool fruitScoreAwarded;
+    uint32_t fruitScoreAwardedValue;
+    bool fruitReset;
     bool scoreChanged;
+    bool extraLifeThresholdCrossed;
+    bool extraLifeAwarded;
+    bool extraLifeSuppressed;
+    uint8_t extraLifeAwardsThisUpdate;
     bool levelCompleteEntered;
     bool levelReset;
     bool countUnderflow;

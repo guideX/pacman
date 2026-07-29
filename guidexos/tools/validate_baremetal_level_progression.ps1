@@ -17,23 +17,29 @@
 param(
     [switch]$SkipBuild,
     [switch]$SkipKernelBuild,
+    [switch]$FruitValidation,
+    [switch]$ProductionValidation,
     [int]$TimeoutSeconds = 120,
     [string]$KernelElfPath = "",
-    [string]$ValidationPackagePath = "D:\Apps\PacManBareMetalLevelValidation"
+    [string]$ValidationPackagePath = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ($FruitValidation -and $ProductionValidation) {
+    throw "FruitValidation and ProductionValidation are mutually exclusive."
+}
 $PacmanRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $ServerRoot = "D:\dev\guideXOSServer"
 $KernelElf = if ([string]::IsNullOrWhiteSpace($KernelElfPath)) {
     Join-Path $ServerRoot "kernel\build\amd64\bin\kernel.elf"
 } else { $KernelElfPath }
-$BuildDir = Join-Path $PSScriptRoot "..\build-baremetal-level-validation"
+$BuildDir = if ($ProductionValidation) { Join-Path $PSScriptRoot "..\build" } elseif ($FruitValidation) { Join-Path $PSScriptRoot "..\build-baremetal-fruit-validation" } else { Join-Path $PSScriptRoot "..\build-baremetal-level-validation" }
 $Qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
 $Ovmf = "C:\Program Files\qemu\share\edk2-x86_64-code.fd"
 $EspSource = Join-Path $ServerRoot "ESP"
 $RunId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss-fff"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
-$RunDir = Join-Path $ServerRoot "logs\baremetal-pacman-level-progression\$RunId"
+$RunName = if ($ProductionValidation) { "production" } elseif ($FruitValidation) { "fruit" } else { "level-progression" }
+$RunDir = Join-Path $ServerRoot "logs\baremetal-pacman-$RunName\$RunId"
 $QemuEsp = Join-Path $RunDir "esp"
 $StageDir = Join-Path $QemuEsp "Apps\PacMan"
 $SerialLog = Join-Path $RunDir "qemu-serial.log"
@@ -51,6 +57,12 @@ $OutcomeLog = Join-Path $RunDir "outcome.txt"
 $QemuProcess = $null
 $QmpPort = 0
 $HarnessRequestedQemuStop = $false
+$ValidationElfName = if ($ProductionValidation) { "pacman.elf" } elseif ($FruitValidation) { "pfruit.elf" } else { "pacval.elf" }
+$ValidationTarget = if ($ProductionValidation) { "pacman-native" } elseif ($FruitValidation) { "pacman-baremetal-fruit-validation" } else { "pacman-baremetal-level-validation" }
+$ValidationPackageId = if ($ProductionValidation) { "com.guidexos.pacman" } elseif ($FruitValidation) { "com.guidexos.pacman.baremetal-fruit-validation" } else { "com.guidexos.pacman.baremetal-level-validation" }
+if ([string]::IsNullOrWhiteSpace($ValidationPackagePath)) {
+    $ValidationPackagePath = if ($ProductionValidation) { "D:\Apps\PacMan" } elseif ($FruitValidation) { "D:\Apps\PacManBareMetalFruitValidation" } else { "D:\Apps\PacManBareMetalLevelValidation" }
+}
 
 New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
 
@@ -171,14 +183,22 @@ function Capture-Screenshot([string]$Name) {
 }
 
 function Stage-ValidationPackage {
-    $elf = Join-Path $ValidationPackagePath "bin\amd64\pacval.elf"
+    $elf = Join-Path $ValidationPackagePath "bin\amd64\$ValidationElfName"
     Assert-Path (Join-Path $ValidationPackagePath "app.json") "validation manifest"
     Assert-Path $elf "validation Native ELF"
     Assert-Path (Join-Path $ValidationPackagePath "resources\level1.gximg") "validation level resource"
     Assert-Path (Join-Path $ValidationPackagePath "resources\pacpics.gximg") "validation sprite resource"
     $bytes = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($elf))
-    if (!$bytes.Contains("PACMAN_BAREMETAL_LEVEL_VALIDATION=ON") -or !$bytes.Contains("BMLVL")) {
-        throw "Validation ELF marker scan failed: $elf"
+    if ($ProductionValidation) {
+        foreach ($marker in @("PACMAN_HOSTED_FRUIT_TEST", "PACMAN_BAREMETAL_FRUIT_VALIDATION", "PACMAN_BAREMETAL_LEVEL_VALIDATION", "FRUITVAL", "BMLVL")) {
+            if ($bytes.Contains($marker)) { throw "Production ELF contains validation marker $marker`: $elf" }
+        }
+        Write-Validation "package.validationMarker=absent production=$elf"
+    } else {
+        $marker = if ($FruitValidation) { "PACMAN_BAREMETAL_FRUIT_VALIDATION=ON" } else { "PACMAN_BAREMETAL_LEVEL_VALIDATION=ON" }
+        if (!$bytes.Contains($marker) -or (!$FruitValidation -and !$bytes.Contains("BMLVL")) -or ($FruitValidation -and !$bytes.Contains("FRUITVAL"))) {
+            throw "Validation ELF marker scan failed: $elf"
+        }
     }
     New-Item -ItemType Directory -Path (Join-Path $QemuEsp "Apps") -Force | Out-Null
     if (Test-Path -LiteralPath $StageDir) {
@@ -192,19 +212,21 @@ function Stage-ValidationPackage {
     New-Item -ItemType Directory -Path (Join-Path $StageDir "bin\amd64") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $StageDir "resources") -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $ValidationPackagePath "app.json") -Destination (Join-Path $StageDir "app.json") -Force
-    Copy-Item -LiteralPath $elf -Destination (Join-Path $StageDir "bin\amd64\pacval.elf") -Force
+    Copy-Item -LiteralPath $elf -Destination (Join-Path $StageDir "bin\amd64\$ValidationElfName") -Force
     Copy-Item -LiteralPath (Join-Path $ValidationPackagePath "resources\level1.gximg") -Destination (Join-Path $StageDir "resources\level1.gximg") -Force
     Copy-Item -LiteralPath (Join-Path $ValidationPackagePath "resources\pacpics.gximg") -Destination (Join-Path $StageDir "resources\pacpics.gximg") -Force
     $files = @(Get-ChildItem -LiteralPath $StageDir -Recurse -File | ForEach-Object {
         $_.FullName.Substring($StageDir.Length + 1).Replace('\', '/')
     })
-    $expected = @("app.json", "bin/amd64/pacval.elf", "resources/level1.gximg", "resources/pacpics.gximg")
+    $expected = @("app.json", "bin/amd64/$ValidationElfName", "resources/level1.gximg", "resources/pacpics.gximg")
     if ((Compare-Object $expected $files).Count -ne 0) { throw "Validation package tree is not exact: $($files -join ',')" }
     foreach ($file in $files) {
         $hash = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $StageDir $file.Replace('/', '\'))
         Write-Validation "package.hash path=/Apps/PacMan/$file sha256=$($hash.Hash)"
     }
-    Write-Validation "package.validationMarker=present source=$ValidationPackagePath qemuMount=/Apps/PacMan reason=bare-metal-discovery-single-package-boundary"
+    if (-not $ProductionValidation) {
+        Write-Validation "package.validationMarker=present source=$ValidationPackagePath qemuMount=/Apps/PacMan reason=bare-metal-discovery-single-package-boundary"
+    }
 }
 
 function Save-Tails {
@@ -241,15 +263,25 @@ try {
     Assert-Path $Qemu "QEMU"
     Assert-Path $Ovmf "OVMF firmware"
     if (!$SkipBuild) {
-        $serverRootCmake = $ServerRoot.Replace('\', '/')
-        Write-Validation "build.pacman target=pacman-baremetal-level-validation diagnostics=ON"
-        & "C:\mingw64\bin\cmake.exe" -S (Join-Path $PacmanRoot "guidexos") -B $BuildDir -G Ninja `
-            "-DGUIDEXOS_SERVER_ROOT=$serverRootCmake" "-DGUIDEXOS_PACKAGE_ROOT=D:/Apps" `
-            -DPACMAN_ENABLE_DIAGNOSTICS=ON -DPACMAN_BAREMETAL_LEVEL_VALIDATION=ON `
-            -DPACMAN_HOSTED_DANGER_TEST=OFF -DPACMAN_HOSTED_LEVEL_TEST=OFF
-        if ($LASTEXITCODE -ne 0) { throw "PacMan validation configure failed" }
-        & "C:\mingw64\bin\cmake.exe" --build $BuildDir --target pacman-baremetal-level-validation -j2
-        if ($LASTEXITCODE -ne 0) { throw "PacMan validation build failed" }
+        if ($ProductionValidation) {
+            Write-Validation "build.pacman target=$ValidationTarget production=ON"
+            & "C:\mingw64\bin\cmake.exe" --build $BuildDir --target $ValidationTarget -j2
+            if ($LASTEXITCODE -ne 0) { throw "PacMan production build failed" }
+        } else {
+            $serverRootCmake = $ServerRoot.Replace('\', '/')
+            $levelValidationFlag = if ($FruitValidation) { 'OFF' } else { 'ON' }
+            $fruitValidationFlag = if ($FruitValidation) { 'ON' } else { 'OFF' }
+            $diagnosticsFlag = if ($FruitValidation) { 'OFF' } else { 'ON' }
+            Write-Validation "build.pacman target=$ValidationTarget diagnostics=$diagnosticsFlag"
+            & "C:\mingw64\bin\cmake.exe" -S (Join-Path $PacmanRoot "guidexos") -B $BuildDir -G Ninja `
+                "-DGUIDEXOS_SERVER_ROOT=$serverRootCmake" "-DGUIDEXOS_PACKAGE_ROOT=D:/Apps" `
+                "-DPACMAN_ENABLE_DIAGNOSTICS=$diagnosticsFlag" "-DPACMAN_BAREMETAL_LEVEL_VALIDATION=$levelValidationFlag" `
+                "-DPACMAN_BAREMETAL_FRUIT_VALIDATION=$fruitValidationFlag" `
+                -DPACMAN_HOSTED_DANGER_TEST=OFF -DPACMAN_HOSTED_LEVEL_TEST=OFF -DPACMAN_HOSTED_FRUIT_TEST=OFF
+            if ($LASTEXITCODE -ne 0) { throw "PacMan validation configure failed" }
+            & "C:\mingw64\bin\cmake.exe" --build $BuildDir --target $ValidationTarget -j2
+            if ($LASTEXITCODE -ne 0) { throw "PacMan validation build failed" }
+        }
     }
     if (!$SkipKernelBuild) {
         Write-Validation "build.server kernel=amd64"
@@ -288,15 +320,50 @@ try {
     Write-Validation "qmp.status=$((Send-Qmp 'info status').Trim())"
     Capture-Screenshot "desktop-after-boot.ppm" | Out-Null
 
-    # The bare-metal shell is the normal App Model launch surface.  Open it
+    # The bare-metal shell is the normal App Model launch surface. Open it
     # with the same desktop shortcut key used by the platform and dispatch the
     # distinct validation package by its manifest id.
     Send-Key "grave"
-    Send-ShellText "desktop.launch com.guidexos.pacman.baremetal-level-validation"
+    Send-ShellText "desktop.launch $ValidationPackageId"
     Send-Key "ret"
     if (!(Wait-Serial "launch begin path=package-relative runtime=native-elf" 1 30)) {
         throw "Validation package did not enter normal App Model launch"
     }
+    if ($ProductionValidation) {
+        if (!(Wait-Serial "PacMan interactive frame presented" 1 30)) { throw "Production Pac-Man did not present an interactive frame" }
+        Write-Validation "launch.PASS production App Model target resolved"
+        Capture-Screenshot "production-first-frame.ppm" | Out-Null
+        Write-FrameEvidence "production-first-frame"
+        if (!(Wait-Serial "PacMan fixed-step simulation started" 1 30)) { throw "Production Pac-Man fixed-step loop did not start" }
+        # QEMU's monitor key names are firmware/keyboard-layout dependent on
+        # this PS/2 path.  Try the named arrows and the guideXOS extended
+        # codes, while the app still proves acceptance through its normal
+        # buffered-turn log.
+        foreach ($inputKey in @("right", "0x103", "0xE04D", "up", "0x100", "0xE075")) {
+            try { Send-Key $inputKey } catch { Write-Validation "input.candidate=$inputKey rejected" }
+        }
+        if (!(Wait-Serial "PacMan requested direction: right" 1 10)) { throw "Production Pac-Man input was not accepted" }
+        Capture-Screenshot "production-input-frame.ppm" | Out-Null
+        Write-FrameEvidence "production-input"
+    } elseif ($FruitValidation) {
+        if (!(Wait-Serial "FRUITVAL PREPARE_SPAWN" 1 30)) { throw "Fruit validation preparation not observed" }
+        Write-Validation "launch.PASS fruit validation App Model target resolved"
+        Capture-Screenshot "fruit-before-trigger.ppm" | Out-Null
+        $fruitMarkers = @(
+            @{ Needle = "FRUITVAL SPAWN_OBSERVED"; Name = "fruit-visible.ppm"; Phase = "fruit-visible" },
+            @{ Needle = "FRUITVAL COLLECTION_OBSERVED"; Name = "fruit-collected.ppm"; Phase = "fruit-collected" },
+            # The next-stage preparation is emitted after the Level 4 fruit
+            # expiry has been observed and the normal reset is complete.
+            @{ Needle = "FRUITVAL PREPARE_LEVEL5_EXPIRATION"; Name = "fruit-level4-expired.ppm"; Phase = "fruit-level4-expired" },
+            @{ Needle = "FRUITVAL LEVEL5_EXPIRATION_OBSERVED"; Name = "fruit-level5-expired.ppm"; Phase = "fruit-level5-expired" },
+            @{ Needle = "FRUITVAL LEVEL8_EXPIRATION_OBSERVED"; Name = "fruit-level8-expired.ppm"; Phase = "fruit-level8-expired" }
+        )
+        foreach ($phase in $fruitMarkers) {
+            if (!(Wait-Serial $phase.Needle 1 $TimeoutSeconds)) { throw "Missing fruit marker: $($phase.Needle)" }
+            Capture-Screenshot $phase.Name | Out-Null
+            Write-FrameEvidence $phase.Phase
+        }
+    } else {
     if (!(Wait-Serial "BMLVL 01 VALIDATION_READY" 1 30)) { throw "BMLVL 01 not observed" }
     Write-Validation "launch.PASS validation App Model target resolved"
     Capture-Screenshot "level1-validation-ready.ppm" | Out-Null
@@ -323,15 +390,49 @@ try {
         Capture-Screenshot $phase.Name | Out-Null
         Write-FrameEvidence $phase.Phase
     }
+    }
 
     Send-Key "esc"
     if (!(Wait-Serial "lifecycle PASS window/resource cleanup complete" 1 10)) {
-        throw "Validation Pac-Man did not exit cleanly after Level 4"
+        throw "Validation Pac-Man did not exit cleanly"
     }
     Write-Validation "cleanup.app PASS Escape closed validation Pac-Man"
 
+    if ($ProductionValidation) {
+        Send-Key "grave"
+        Send-ShellText "desktop.launch $ValidationPackageId"
+        Send-Key "ret"
+        if (!(Wait-Serial "launch begin path=package-relative runtime=native-elf" 2 30) -or
+            !(Wait-Serial "PacMan interactive frame presented" 2 30)) {
+            throw "Production Pac-Man did not relaunch through the normal App Model"
+        }
+        Capture-Screenshot "production-relaunch-frame.ppm" | Out-Null
+        Write-FrameEvidence "production-relaunch"
+        Send-Key "esc"
+        if (!(Wait-Serial "lifecycle PASS window/resource cleanup complete" 2 10)) {
+            throw "Production Pac-Man relaunch did not clean up"
+        }
+        Write-Validation "cleanup.app PASS production relaunch and Escape cleanup"
+    }
+
     $serial = Read-Serial
-    $required = @(
+    $required = if ($ProductionValidation) { @(
+        "PacMan interactive frame presented",
+        "PacMan fixed-step simulation started",
+        "PacMan requested direction: right",
+        "frame PASS app=",
+        "lifecycle PASS window/resource cleanup complete"
+    ) } elseif ($FruitValidation) { @(
+        "FRUITVAL SPAWN_OBSERVED",
+        "FRUITVAL COLLECTION_OBSERVED",
+        "FRUITVAL PREPARE_LEVEL5_EXPIRATION",
+        "FRUITVAL LEVEL5_EXPIRATION_OBSERVED",
+        "FRUITVAL LEVEL8_EXPIRATION_OBSERVED",
+        "FRUITVAL EXTRA_LIFE_OBSERVED",
+        "frame PASS app=",
+        "PacMan frame seq=",
+        "lifecycle PASS window/resource cleanup complete"
+    ) } else { @(
         "BMLVL 06 REMAINING_ZERO old=1 new=1",
         "BMLVL 06 REMAINING_ZERO old=2 new=2",
         "BMLVL 06 REMAINING_ZERO old=3 new=3",
@@ -347,8 +448,21 @@ try {
         "frame PASS app=",
         "PacMan frame seq=",
         "lifecycle PASS window/resource cleanup complete"
-    )
+    ) }
     foreach ($needle in $required) { if (!$serial.Contains($needle)) { throw "Missing required evidence: $needle" } }
+    if ($ProductionValidation) {
+        $serial | Select-String -Pattern 'PacMan interactive frame presented|PacMan fixed-step simulation started|PacMan buffered turn accepted|PacMan frame seq=|frame PASS app=' |
+            Set-Content -LiteralPath $SummaryLog
+        Write-Validation "evidence.PASS production rendering/input/lifecycle through QEMU"
+        Write-Validation "VALIDATION_RESULT=PASS"
+        exit 0
+    }
+    if ($FruitValidation) {
+        $serial | Select-String -Pattern 'FRUITVAL|PacMan frame seq=|frame PASS app=' | Set-Content -LiteralPath $SummaryLog
+        Write-Validation "evidence.PASS fruit spawn/collection/expiration/extra-life through QEMU"
+        Write-Validation "VALIDATION_RESULT=PASS"
+        exit 0
+    }
     if ($serial -notmatch "PacMan frame seq=.*Playing.*level=2") { throw "Missing Level 2 Playing frame evidence" }
     foreach ($level in @(1, 2, 3)) {
         $sameLevel = "old=$level new=$level"
