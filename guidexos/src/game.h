@@ -5,7 +5,7 @@
 
 static const uint32_t kPacManLevelCompleteDelaySteps = 100u;
 static const uint32_t kPacManDeathDurationSteps = 100u;
-static const uint32_t kPacManReadyAfterDeathSteps = 60u;
+static const uint32_t kPacManReadyAfterDeathSteps = 300u;
 static const uint32_t kPacManLevelCompleteBonus = 1000u;
 static const uint8_t kPacManInitialLives = 3u;
 static const uint32_t kPacManGhostCount = 4u;
@@ -14,6 +14,12 @@ static const uint32_t kPacManPowerPillScore = 10u;
 static const uint32_t kPacManGhostEatScore[4] = {200u, 400u, 800u, 1600u};
 static const uint32_t kPacManFruitTriggerTime = 4000u;
 static const uint32_t kPacManFruitExpirationTime = 5000u;
+// The VB6 form's only presentation timer is 500 ms.  Historical source does
+// not blink power pills, so this fixed cadence is the smallest deterministic
+// approximation for the requested native polish.
+static const uint32_t kPacManPowerPillBlinkIntervalSteps = 50u;
+static const uint32_t kPacManInitialReadyDurationSteps = 450u;
+static const uint32_t kPacManInitialHighScore = 10000u;
 static const int kPacManFruitCenterX = 232;
 static const int kPacManFruitCenterY = 280;
 static const uint8_t kPacManMaximumLives = 255u;
@@ -50,6 +56,7 @@ struct GhostTarget {
 };
 
 void game_initialize(GameState* game);
+void game_begin_initial_ready(GameState* game);
 void game_reset_level(GameState* game);
 bool game_restart_session(GameState* game);
 FruitRules calculate_fruit_rules(uint32_t level);

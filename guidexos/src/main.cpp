@@ -177,6 +177,7 @@ static void append_validation_ghost(char* message, uint32_t* index, uint32_t cap
 
 static const char* validation_state_name(PlayState state) {
     switch (state) {
+    case PlayState::InitialReady: return "InitialReady";
     case PlayState::Playing: return "Playing";
     case PlayState::Dying: return "Dying";
     case PlayState::ReadyAfterDeath: return "Ready";
@@ -237,6 +238,10 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_number(message, &index, sizeof(message), game_frightened_flash_threshold(game));
     append_frame_text(message, &index, sizeof(message), " remaining=");
     append_frame_number(message, &index, sizeof(message), game.level.totalConsumablesRemaining);
+    append_frame_text(message, &index, sizeof(message), " powerVisible=");
+    append_frame_number(message, &index, sizeof(message), game.powerPillVisible ? 1u : 0u);
+    append_frame_text(message, &index, sizeof(message), " powerBlink=");
+    append_frame_number(message, &index, sizeof(message), game.powerPillBlinkStepsRemaining);
     append_frame_text(message, &index, sizeof(message), " fruitPhase=");
     append_frame_text(message, &index, sizeof(message), fruit_phase_name(game.fruit.phase));
     append_frame_text(message, &index, sizeof(message), " fruitType=");
@@ -257,6 +262,8 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_number(message, &index, sizeof(message), game.lifeAward.awardsGranted);
     append_frame_text(message, &index, sizeof(message), " nextLife=");
     append_frame_number(message, &index, sizeof(message), game.lifeAward.nextThreshold);
+    append_frame_text(message, &index, sizeof(message), " high=");
+    append_frame_number(message, &index, sizeof(message), game.highScore);
     message[index] = '\0';
     ctx->host->log(ctx, message);
 }
@@ -373,7 +380,7 @@ static void log_diagnostic_ghost_state(gx_app_context* ctx, const char* label,
 }
 #endif
 
-static void log_game_events(gx_app_context* ctx, const GameState& game) {
+static void log_game_events(gx_app_context* ctx, GameState& game) {
 #if PACMAN_ENABLE_DIAGNOSTICS
     if (!ctx || !ctx->host || !ctx->host->log) return;
     if (game.normalPillConsumed) ctx->host->log(ctx, "PacMan normal pill consumed");
@@ -398,6 +405,7 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (game.extraLifeSuppressed) ctx->host->log(ctx, "PacMan extra life suppressed at maximum lives");
     if (game.powerPillEncounterReset) ctx->host->log(ctx, "PacMan power-pill encounter reset");
     if (game.scoreChanged) log_game_value(ctx, "PacMan score updated: ", game.score);
+    if (game.highScoreChanged) log_game_value(ctx, "PacMan high score updated: ", game.highScore);
     if (game.normalPillConsumed || game.powerPillConsumed) {
         log_game_value(ctx, "PacMan remaining consumables: ", game.level.totalConsumablesRemaining);
     }
@@ -415,6 +423,7 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (game.levelReset) {
         log_game_value(ctx, "PacMan level reset: ", game.levelNumber);
         log_game_value(ctx, "PacMan remaining consumables: ", game.level.totalConsumablesRemaining);
+        ctx->host->log(ctx, "PacMan fruit-history display updated");
     }
     if (game.readyEntered) ctx->host->log(ctx, "PacMan Ready entered");
     if (game.gameplayResumed) ctx->host->log(ctx, "PacMan gameplay resumed");
@@ -423,6 +432,7 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
     if (game.lifeDecremented) log_game_value(ctx, "PacMan life decremented; lives remaining: ", game.lives);
     if (game.actorReset) ctx->host->log(ctx, "PacMan actors reset after death");
     if (game.gameOverEntered) ctx->host->log(ctx, "PacMan Game Over entered");
+    if (game.sessionRestarted) ctx->host->log(ctx, "PacMan new-game reset complete");
     static const char* labels[] = {"Red", "Pink", "Cyan", "Orange"};
     for (uint32_t ghostIndex = 0; ghostIndex < kPacManGhostCount; ++ghostIndex) {
         if (game.ghostTimerInitialized[ghostIndex]) {
@@ -450,6 +460,10 @@ static void log_game_events(gx_app_context* ctx, const GameState& game) {
         log_diagnostic_ghost_state(ctx, labels[ghostIndex], game.ghosts[ghostIndex]);
 #endif
     }
+    // Session restart is an edge-triggered diagnostic event. Consume it after
+    // the frame's event log so it cannot flood hosted serial output while the
+    // restarted session continues playing.
+    game.sessionRestarted = false;
 #else
     (void)ctx;
     (void)game;
@@ -865,8 +879,12 @@ static void baremetal_level_observe_update(gx_app_context* ctx, gx_handle window
 static bool apply_hosted_danger_test_placement(GameState* game, uint32_t* placementCount) {
     if (!game || !placementCount || game->playState != PlayState::Playing || *placementCount >= 3u) return false;
     const uint32_t stepsBetweenPlacements = kPacManDeathDurationSteps +
-        kPacManReadyAfterDeathSteps + 30u;
-    const uint32_t nextPlacementStep = 100u + *placementCount * stepsBetweenPlacements;
+        kPacManReadyAfterDeathSteps + 300u;
+    // Standalone sessions now spend the source-supported 4.5 seconds in the
+    // initial Ready phase. Keep the validation collision deterministic, but
+    // leave a short Playing capture window after that phase completes.
+    const uint32_t firstPlacementStep = kPacManInitialReadyDurationSteps + 100u;
+    const uint32_t nextPlacementStep = firstPlacementStep + *placementCount * stepsBetweenPlacements;
     if (game->simulationSteps < nextPlacementStep) return false;
     game->ghosts[0].x = game->pacman.x;
     game->ghosts[0].y = game->pacman.y;
@@ -915,6 +933,29 @@ static void apply_hosted_power_pill_test_step(GameState* game, bool* activated,
                                                bool* expirationArmed) {
     if (!game || !activated || !movementWarmupSteps || !expirationArmed ||
         game->playState != PlayState::Playing) return;
+    if (!*activated && *movementWarmupSteps < 120u) {
+        // Validation-only hold: it gives the shared production phase time to
+        // show visible, hidden, and visible-again states before the normal
+        // source pill-consumption path is allowed to run.
+        game->pacman.x = 24;
+        game->pacman.y = 360;
+        game->pacman.direction = Direction::None;
+        game->pacman.facingDirection = Direction::Down;
+        game->pacman.requestedDirection = Direction::None;
+        game->pacman.offset = 0;
+        game->pacman.speed = 0;
+        ++*movementWarmupSteps;
+        return;
+    }
+    if (!*activated && *movementWarmupSteps == 120u) {
+        game->pacman.direction = Direction::Down;
+        game->pacman.facingDirection = Direction::Down;
+        game->pacman.requestedDirection = Direction::Down;
+        game->pacman.offset = 0;
+        game->pacman.speed = 0;
+        ++*movementWarmupSteps;
+        return;
+    }
     if (!*activated && game->ghosts[0].condition == GhostCondition::Frightened) {
         *activated = true;
     }
@@ -1116,7 +1157,11 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     ctx->host->log(ctx, "PacMan game initialization begin");
     GameState game;
     game_initialize(&game);
+    game_begin_initial_ready(&game);
     ctx->host->log(ctx, "PacMan game initialization complete");
+#if PACMAN_ENABLE_DIAGNOSTICS
+    ctx->host->log(ctx, "PacMan initial session state: InitialReady");
+#endif
 #if PACMAN_ENABLE_DIAGNOSTICS
     ctx->host->log(ctx, "PacMan ghosts initialized: Red, Pink, Cyan, and Orange moving");
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {

@@ -234,6 +234,12 @@ GUIDEXOS_PACKAGE_ROOT:PATH=D:/Apps
 //guideXOS Server repository root used for app staging
 GUIDEXOS_SERVER_ROOT:PATH=D:/dev/guideXOSServer
 
+//Enable isolated QEMU bare-metal fruit and extra-life validation
+PACMAN_BAREMETAL_FRUIT_VALIDATION:BOOL=OFF
+
+//Enable isolated QEMU bare-metal multi-level progression validation
+PACMAN_BAREMETAL_LEVEL_VALIDATION:BOOL=OFF
+
 //Enable gated Native ELF gameplay diagnostics
 PACMAN_ENABLE_DIAGNOSTICS:BOOL=ON
 
@@ -244,9 +250,22 @@ PACMAN_HOSTED_CYAN_MOVEMENT_TEST:BOOL=ON
 //Enable test-only automatic Red overlap for hosted danger validation
 PACMAN_HOSTED_DANGER_TEST:BOOL=ON
 
+//Enable isolated hosted fruit and extra-life validation
+PACMAN_HOSTED_FRUIT_TEST:BOOL=OFF
+
+//Enable isolated hosted multi-level progression validation
+PACMAN_HOSTED_LEVEL_TEST:BOOL=OFF
+
+//Enable isolated hosted Orange movement validation without forced
+// collisions
+PACMAN_HOSTED_ORANGE_MOVEMENT_TEST:BOOL=OFF
+
 //Enable isolated hosted Pink movement validation without forced
 // collisions
 PACMAN_HOSTED_PINK_MOVEMENT_TEST:BOOL=OFF
+
+//Enable isolated hosted power-pill lifecycle validation
+PACMAN_HOSTED_POWER_PILL_TEST:BOOL=OFF
 
 //Enable isolated hosted Red movement validation without forced
 // collisions

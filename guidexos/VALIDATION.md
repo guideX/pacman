@@ -243,3 +243,26 @@ ghost-eaten, all four ghost-eating scores, and timer expiration. Captures and a
 run summary are written under `guidexos/captures/` and the server root with a
 unique run identifier; these are validation artifacts, not production package
 inputs.
+
+The 2026-07-29 run also records the requested shared power-pill visibility
+phase: `powerVisible=1 -> 0 -> 1` at the 50 fixed-step boundary, with logical
+pill consumption and frightened behavior continuing while the rendered pill is
+hidden. The legacy frightened-ghost `flashing-log` breadcrumb is reported
+separately and is informational for this visibility-polish check.
+
+## Session and HUD milestone
+
+The source-supported standalone session/HUD work is documented in
+`HISTORICAL_SESSION_AND_HUD_INVESTIGATION.md`. It covers the 10,000 initial
+high score, three lives, level-one reset, source-duration initial Ready,
+ordinary Ready-after-death, source-style score/high-score strip, reserve-life
+icons, right-to-left fruit history, Game Over/restart, focus-safe input, and
+the requested power-pill visibility approximation. Coin/credit flow,
+two-player play, pause, attract/demo, sound, and persistent high score remain
+explicitly deferred.
+
+Hosted capture summaries from the completed run are retained in the guideXOS
+Server workspace under the unique `hosted-pacman-danger-*` and
+`hosted-pacman-power-pill-*` files. The real UEFI/QEMU bare-metal progression
+summary is retained under
+`D:\dev\guideXOSServer\logs\baremetal-pacman-level-progression\`.

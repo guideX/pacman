@@ -155,7 +155,7 @@ function Get-LatestCompositorFrameSequence {
 }
 
 function Get-LatestValidationFrame([string]$state, [uint64]$minimumSequence = 0, [int]$score = -1, [int]$lives = -1, [uint64]$maximumSequence = 0) {
-    $pattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+)'
+    $pattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) chain=\d+ lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+)'
     $matches = [regex]::Matches((Read-RawLog), $pattern)
     for ($i = $matches.Count - 1; $i -ge 0; --$i) {
         $frame = Convert-FrameMatch $matches[$i]
@@ -183,7 +183,7 @@ function Wait-ForValidationFrame([string]$state, [uint64]$minimumSequence = 0, [
 }
 
 function Get-ValidationFrameBySequence([uint64]$sequence) {
-    $pattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+)'
+    $pattern = 'PacMan frame seq=(\d+) window=(\d+) state=(\w+) step=(\d+) score=(\d+) chain=\d+ lives=(\d+) level=(\d+) pacman=(-?\d+),(-?\d+) size=(\d+)x(\d+) stride=(\d+) bytes=(\d+) result=(\d+)'
     $matches = [regex]::Matches((Read-RawLog), $pattern)
     for ($i = $matches.Count - 1; $i -ge 0; --$i) {
         $frame = Convert-FrameMatch $matches[$i]
@@ -322,8 +322,13 @@ function Capture-Hosted([string]$label, [string]$state, [uint64]$minimumSequence
         $windowWidth = $rect.Right - $rect.Left
         $windowHeight = $rect.Bottom - $rect.Top
         $hwndText = '0x' + $compositor.ToInt64().ToString('X')
+        $frameRaw = Read-RawLog
+        $stateValues = [regex]::Match($frameRaw, "PacMan frame seq=$($paintedFrame.Sequence) .*? powerVisible=(\d+) powerBlink=(\d+).*? high=(\d+)")
+        $powerVisible = if ($stateValues.Success) { $stateValues.Groups[1].Value } else { 'unknown' }
+        $powerBlink = if ($stateValues.Success) { $stateValues.Groups[2].Value } else { 'unknown' }
+        $highScore = if ($stateValues.Success) { $stateValues.Groups[3].Value } else { 'unknown' }
         $results.Add("capture=$path")
-        $results.Add("capture-target appId=com.guidexos.pacman.danger-validation runtimeId=$($lifecycle.Boundary.RuntimeId) windowId=$($paintedFrame.WindowId) hostedHwnd=$hwndText title=guideXOSCpp Compositor dimensions=$($windowWidth)x$($windowHeight) frameGeneration=$($sync.FrameGeneration) paintGeneration=$($sync.PaintGeneration) captureGeneration=$($sync.CaptureGeneration) frameSequence=$($paintedFrame.Sequence) state=$($paintedFrame.State) score=$($paintedFrame.Score) lives=$($paintedFrame.Lives) level=$($paintedFrame.Level) filename=$path timestampUtc=$($captureTimestamp.ToString('o'))")
+        $results.Add("capture-target appId=com.guidexos.pacman.danger-validation runtimeId=$($lifecycle.Boundary.RuntimeId) windowId=$($paintedFrame.WindowId) hostedHwnd=$hwndText title=guideXOSCpp Compositor dimensions=$($windowWidth)x$($windowHeight) frameGeneration=$($sync.FrameGeneration) paintGeneration=$($sync.PaintGeneration) captureGeneration=$($sync.CaptureGeneration) frameSequence=$($paintedFrame.Sequence) state=$($paintedFrame.State) score=$($paintedFrame.Score) highScore=$highScore lives=$($paintedFrame.Lives) level=$($paintedFrame.Level) powerVisible=$powerVisible powerBlinkSteps=$powerBlink filename=$path timestampUtc=$($captureTimestamp.ToString('o'))")
     }
     finally {
         if ($freezeRequested) {
@@ -413,6 +418,7 @@ try {
     $lifeTwoBaseline = Get-LogCount 'PacMan life decremented; lives remaining: 2'
     $deathBaseline = Get-LogCount 'PacMan death state entered'
     Launch-DangerPacMan
+Capture-Hosted 'initial-ready' 'InitialReady' 0 -1 3 $true
     Capture-Hosted 'playing' 'Playing' 0 -1 3
     $noEarlyCollision = Wait-ForNoAdditionalLogCount 'PacMan ghost collision detected' $collisionBaseline 350
     $results.Add("cycle=1 no-automatic-collision-before-schedule=$noEarlyCollision")
@@ -458,7 +464,14 @@ try {
     }
     $results.Add("cycle=1 restart=$restart")
     if (-not $restart) { throw 'Enter did not restart the Game Over session.' }
-    Capture-Hosted 'restart' 'Playing' $restartFrameBaseline 0 3 $true
+    $restartScoreResetFrame = Wait-ForValidationFrame 'Playing' $restartFrameBaseline 0 3 3000 $false
+    $restartScoreReset = $null -ne $restartScoreResetFrame
+    $results.Add("cycle=1 restart-score-reset=$restartScoreReset")
+    if (-not $restartScoreReset) { throw 'Restart did not emit a fresh Playing frame with score=0 and lives=3.' }
+    # The compositor can advance several native frames while the sync barrier
+    # is serviced. The raw frame above is the exact reset assertion; the
+    # capture itself only requires the restarted Playing/lives presentation.
+    Capture-Hosted 'restart' 'Playing' $restartFrameBaseline -1 3 $true
     Escape-And-Wait 1
 
     Send-ServerCommand 'nativeapp.processes'

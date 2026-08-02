@@ -95,7 +95,7 @@ function Send-ServerCommand([string]$command) {
     $process.StandardInput.Flush()
 }
 
-$framePattern = 'PacMan frame seq=(?<seq>\d+) window=(?<window>\d+) state=(?<state>\w+) step=(?<step>\d+) score=(?<score>\d+) chain=(?<chain>\d+) lives=(?<lives>\d+) level=(?<level>\d+) pacman=(?<px>-?\d+),(?<py>-?\d+) size=\S+ stride=\S+ bytes=\S+ result=(?<result>\d+) red=(?<rx>-?\d+),(?<ry>-?\d+) dir=(?<rd>\w+) target=-?\d+,-?\d+ release=\S+ condition=(?<rc>\w+) pp=(?<rp>\d+) anim=\d+ pink=(?<pinkx>-?\d+),(?<pinky>-?\d+) dir=\w+ target=-?\d+,-?\d+ release=\S+ condition=(?<pinkc>\w+) pp=(?<pinkp>\d+) anim=\d+ cyan=(?<cyanx>-?\d+),(?<cyany>-?\d+) dir=\w+ target=-?\d+,-?\d+ release=\S+ condition=(?<cyanc>\w+) pp=(?<cyanp>\d+) anim=\d+ orange=(?<ox>-?\d+),(?<oy>-?\d+) dir=\w+ target=-?\d+,-?\d+ release=\S+ condition=(?<oc>\w+) pp=(?<op>\d+) anim=\d+'
+$framePattern = 'PacMan frame seq=(?<seq>\d+) window=(?<window>\d+) state=(?<state>\w+) step=(?<step>\d+) score=(?<score>\d+) chain=(?<chain>\d+) lives=(?<lives>\d+) level=(?<level>\d+) pacman=(?<px>-?\d+),(?<py>-?\d+) size=\S+ stride=\S+ bytes=\S+ result=(?<result>\d+) red=(?<rx>-?\d+),(?<ry>-?\d+) dir=(?<rd>\w+) target=-?\d+,-?\d+ release=\S+ condition=(?<rc>\w+) pp=(?<rp>\d+) anim=\d+ pink=(?<pinkx>-?\d+),(?<pinky>-?\d+) dir=\w+ target=-?\d+,-?\d+ release=\S+ condition=(?<pinkc>\w+) pp=(?<pinkp>\d+) anim=\d+ cyan=(?<cyanx>-?\d+),(?<cyany>-?\d+) dir=\w+ target=-?\d+,-?\d+ release=\S+ condition=(?<cyanc>\w+) pp=(?<cyanp>\d+) anim=\d+ orange=(?<ox>-?\d+),(?<oy>-?\d+) dir=\w+ target=-?\d+,-?\d+ release=\S+ condition=(?<oc>\w+) pp=(?<op>\d+) anim=\d+.*?powerVisible=(?<powerVisible>\d+) powerBlink=(?<powerBlink>\d+)'
 
 function Get-Frames {
     $frames = [System.Collections.Generic.List[object]]::new()
@@ -114,6 +114,8 @@ function Get-Frames {
             CyanCondition = $match.Groups['cyanc'].Value; CyanTimer = [uint32]$match.Groups['cyanp'].Value
             OrangeX = [int]$match.Groups['ox'].Value; OrangeY = [int]$match.Groups['oy'].Value
             OrangeCondition = $match.Groups['oc'].Value; OrangeTimer = [uint32]$match.Groups['op'].Value
+            PowerVisible = [uint32]$match.Groups['powerVisible'].Value
+            PowerBlink = [uint32]$match.Groups['powerBlink'].Value
         })
     }
     return $frames
@@ -153,7 +155,7 @@ function Sync-Capture([pscustomobject]$frame, [string]$label) {
         if (-not [PacManPowerPillCapture1]::Capture($path, $compositor)) { throw "Capture failed for $label." }
     } finally { Send-ServerCommand "gui.unfreeze $($frame.WindowId)" }
     $results.Add("capture=$path")
-    $results.Add("capture-target runtimeId=$runtimeId windowId=$($frame.WindowId) frameSequence=$($frame.Sequence) frameGeneration=$($sync.FrameGeneration) paintGeneration=$($sync.PaintGeneration) captureGeneration=$($sync.CaptureGeneration) state=$($frame.State) step=$($frame.Step) pacman=$($frame.PacmanX),$($frame.PacmanY) score=$($frame.Score) chain=$($frame.Chain) red=$($frame.RedX),$($frame.RedY),$($frame.RedCondition),$($frame.RedTimer) pink=$($frame.PinkX),$($frame.PinkY),$($frame.PinkCondition),$($frame.PinkTimer) cyan=$($frame.CyanX),$($frame.CyanY),$($frame.CyanCondition),$($frame.CyanTimer) orange=$($frame.OrangeX),$($frame.OrangeY),$($frame.OrangeCondition),$($frame.OrangeTimer)")
+    $results.Add("capture-target runtimeId=$runtimeId windowId=$($frame.WindowId) frameSequence=$($frame.Sequence) frameGeneration=$($sync.FrameGeneration) paintGeneration=$($sync.PaintGeneration) captureGeneration=$($sync.CaptureGeneration) state=$($frame.State) step=$($frame.Step) pacman=$($frame.PacmanX),$($frame.PacmanY) score=$($frame.Score) chain=$($frame.Chain) powerVisible=$($frame.PowerVisible) powerBlinkSteps=$($frame.PowerBlink) red=$($frame.RedX),$($frame.RedY),$($frame.RedCondition),$($frame.RedTimer) pink=$($frame.PinkX),$($frame.PinkY),$($frame.PinkCondition),$($frame.PinkTimer) cyan=$($frame.CyanX),$($frame.CyanY),$($frame.CyanCondition),$($frame.CyanTimer) orange=$($frame.OrangeX),$($frame.OrangeY),$($frame.OrangeCondition),$($frame.OrangeTimer)")
     return $frame
 }
 
@@ -196,6 +198,15 @@ try {
     $initial = Wait-ForFrame 0 { param($f) $f.Chain -eq 0 -and $f.RedCondition -eq 'normal' -and $f.RedTimer -eq 0 } 12000
     if ($null -eq $initial) { throw 'Initial normal ghost frame was not observed.' }
     [void](Sync-Capture $initial 'before-power-pill')
+    $visible = Wait-ForFrame $initial.Sequence { param($f) $f.PowerVisible -eq 1 } 5000
+    if ($null -eq $visible) { throw 'Visible power-pill phase was not observed.' }
+    [void](Sync-Capture $visible 'power-pill-visible')
+    $hidden = Wait-ForFrame $visible.Sequence { param($f) $f.PowerVisible -eq 0 } 5000
+    if ($null -eq $hidden) { throw 'Hidden power-pill phase was not observed.' }
+    [void](Sync-Capture $hidden 'power-pill-hidden')
+    $visibleAgain = Wait-ForFrame $hidden.Sequence { param($f) $f.PowerVisible -eq 1 } 5000
+    if ($null -eq $visibleAgain) { throw 'Power-pill phase did not reappear.' }
+    [void](Sync-Capture $visibleAgain 'power-pill-visible-again')
     $fright = Wait-ForFrame $initial.Sequence { param($f) $f.RedCondition -eq 'frightened' -and $f.RedTimer -gt 0 -and $f.Chain -eq 0 } 12000
     if ($null -eq $fright) { throw 'First frightened frame was not observed.' }
     [void](Sync-Capture $fright 'first-frightened')
@@ -220,6 +231,7 @@ try {
 
     $raw = Read-RawLog
     $results.Add("power-pill-log=$([bool]($raw -match 'PacMan power pill consumed'))")
+    $results.Add("shared-blink-visible-hidden-visible=$([bool]($visible.PowerVisible -eq 1 -and $hidden.PowerVisible -eq 0 -and $visibleAgain.PowerVisible -eq 1))")
     $results.Add("timer-init-log=$([bool]($raw -match 'PacMan frightened timer initialized'))")
     $results.Add("reversal-log=$([bool]($raw -match 'PacMan ghost reversal applied'))")
     $results.Add("flashing-log=$([bool]($raw -match 'PacMan frightened flashing began'))")

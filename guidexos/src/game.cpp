@@ -284,6 +284,39 @@ static void reset_fruit_for_level(GameState* game) {
     game->fruit.y = rules.y;
 }
 
+static void reset_power_pill_animation(GameState* game) {
+    if (!game) return;
+    game->powerPillVisible = true;
+    game->powerPillBlinkStepsRemaining = kPacManPowerPillBlinkIntervalSteps;
+}
+
+static void reset_ready_animation(GameState* game, uint32_t durationSteps) {
+    if (!game) return;
+    game->readyStepsRemaining = durationSteps;
+    game->readyTextVisible = true;
+    game->readyFlashStepsRemaining = kPacManPowerPillBlinkIntervalSteps;
+}
+
+static void advance_ready_animation(GameState* game) {
+    if (!game) return;
+    if (game->readyFlashStepsRemaining > 0u) --game->readyFlashStepsRemaining;
+    if (game->readyFlashStepsRemaining == 0u && game->readyStepsRemaining > 0u) {
+        game->readyTextVisible = !game->readyTextVisible;
+        game->readyFlashStepsRemaining = kPacManPowerPillBlinkIntervalSteps;
+        game->visualDirty = true;
+    }
+}
+
+static void advance_power_pill_animation(GameState* game) {
+    if (!game || game->level.powerPillsRemaining == 0u) return;
+    if (game->powerPillBlinkStepsRemaining > 0u) --game->powerPillBlinkStepsRemaining;
+    if (game->powerPillBlinkStepsRemaining == 0u) {
+        game->powerPillVisible = !game->powerPillVisible;
+        game->powerPillBlinkStepsRemaining = kPacManPowerPillBlinkIntervalSteps;
+        game->visualDirty = true;
+    }
+}
+
 static bool ghost_can_receive_power_pill(const GhostState& ghost) {
     return ghost.active && ghost.releaseState == GhostReleaseState::Normal &&
         (ghost.condition == GhostCondition::Normal || ghost.condition == GhostCondition::Frightened);
@@ -1261,7 +1294,7 @@ static void update_dying(GameState* game) {
     if (game->lives > 0) {
         reset_actor_positions(game);
         game->playState = PlayState::ReadyAfterDeath;
-        game->readyStepsRemaining = kPacManReadyAfterDeathSteps;
+        reset_ready_animation(game, kPacManReadyAfterDeathSteps);
         game->actorReset = true;
         game->visualDirty = true;
         return;
@@ -1275,9 +1308,11 @@ static void update_dying(GameState* game) {
 
 static void update_ready_after_death(GameState* game) {
     if (!game) return;
+    advance_ready_animation(game);
     if (game->readyStepsRemaining > 0) --game->readyStepsRemaining;
     if (game->readyStepsRemaining == 0) {
         game->playState = PlayState::Playing;
+        game->readyTextVisible = false;
         game->gameplayResumed = true;
         game->visualDirty = true;
     }
@@ -1541,7 +1576,9 @@ void game_initialize(GameState* game) {
     game->ghosts[1].targetX = pinkTarget.x;
     game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
+    game->highScore = kPacManInitialHighScore;
     reset_fruit_for_level(game);
+    reset_power_pill_animation(game);
     game->lifeAward.thresholdsAwardedMask = 0;
     game->lifeAward.awardsGranted = 0;
     game->lifeAward.nextThreshold = 10000u;
@@ -1559,6 +1596,8 @@ void game_initialize(GameState* game) {
     game->gameOverTransitions = 0;
     game->focused = true;
     game->visualDirty = true;
+    game->readyTextVisible = false;
+    game->readyFlashStepsRemaining = 0;
     game->turnAccepted = false;
     game->becameBlocked = false;
     game->tunnelWrapped = false;
@@ -1582,6 +1621,7 @@ void game_initialize(GameState* game) {
     game->fruitScoreAwardedValue = 0;
     game->fruitReset = false;
     game->scoreChanged = false;
+    game->highScoreChanged = false;
     game->levelCompleteEntered = false;
     game->levelReset = false;
     game->countUnderflow = false;
@@ -1596,6 +1636,17 @@ void game_initialize(GameState* game) {
     game->suppressGhostCollisionsForValidation = false;
     clear_power_event_flags(game);
     game->simulationSteps = 0;
+}
+
+void game_begin_initial_ready(GameState* game) {
+    if (!game) return;
+    game->playState = PlayState::InitialReady;
+    reset_ready_animation(game, kPacManInitialReadyDurationSteps);
+    clear_held(&game->held);
+    game->pacman.direction = Direction::None;
+    game->pacman.requestedDirection = Direction::None;
+    game->readyEntered = true;
+    game->visualDirty = true;
 }
 
 ScoreAwardResult award_score(GameState& game, uint32_t points) {
@@ -1615,6 +1666,10 @@ ScoreAwardResult award_score(GameState& game, uint32_t points) {
     }
     result.newScore = game.score;
     game.scoreChanged = true;
+    if (game.score > game.highScore) {
+        game.highScore = game.score;
+        game.highScoreChanged = true;
+    }
 
     // basPacSetUp.bas checks the three historical crossings independently.
     // This deliberately permits one large score award to grant more than one
@@ -1664,6 +1719,7 @@ void game_reset_level(GameState* game) {
     level_initialize(&game->level);
     reset_actor_positions(game);
     reset_fruit_for_level(game);
+    reset_power_pill_animation(game);
     game->ghosts[0].targetX = game->pacman.x;
     game->ghosts[0].targetY = game->pacman.y;
     const GhostTarget pinkTarget = calculate_pink_target(*game, game->pacman);
@@ -1675,7 +1731,7 @@ void game_reset_level(GameState* game) {
     game->playState = PlayState::ReadyAfterDeath;
     game->levelCompleteStepsRemaining = 0;
     game->deathStepsRemaining = 0;
-    game->readyStepsRemaining = calculate_level_rules(game->levelNumber).readyDurationSteps;
+    reset_ready_animation(game, kPacManReadyAfterDeathSteps);
     game->ghostEatChain = 0;
     game->frightenedFlashPhase = 0;
     clear_held(&game->held);
@@ -1702,6 +1758,7 @@ bool game_restart_session(GameState* game) {
     game->ghosts[1].targetY = pinkTarget.y;
     game->score = 0;
     reset_fruit_for_level(game);
+    reset_power_pill_animation(game);
     game->lifeAward.thresholdsAwardedMask = 0;
     game->lifeAward.awardsGranted = 0;
     game->lifeAward.nextThreshold = 10000u;
@@ -1711,7 +1768,7 @@ bool game_restart_session(GameState* game) {
     game->playState = PlayState::ReadyAfterDeath;
     game->levelCompleteStepsRemaining = 0;
     game->deathStepsRemaining = 0;
-    game->readyStepsRemaining = calculate_level_rules(game->levelNumber).readyDurationSteps;
+    reset_ready_animation(game, kPacManReadyAfterDeathSteps);
     game->deathAnimationFrame = 0;
     game->levelCompleteTransitions = 0;
     game->levelResetCount = 0;
@@ -1752,6 +1809,7 @@ bool game_restart_session(GameState* game) {
     game->gameOverEntered = false;
     game->readyEntered = true;
     game->gameplayResumed = false;
+    game->highScoreChanged = false;
     game->simulationSteps = 0;
     clear_power_event_flags(game);
     return true;
@@ -1813,6 +1871,7 @@ void game_update(GameState* game) {
     game->normalPillConsumed = false;
     game->powerPillConsumed = false;
     game->scoreChanged = false;
+    game->highScoreChanged = false;
     game->levelCompleteEntered = false;
     game->levelReset = false;
     game->countUnderflow = false;
@@ -1830,6 +1889,18 @@ void game_update(GameState* game) {
 
     if (game->playState == PlayState::Dying) {
         update_dying(game);
+        ++game->simulationSteps;
+        return;
+    }
+    if (game->playState == PlayState::InitialReady) {
+        advance_ready_animation(game);
+        if (game->readyStepsRemaining > 0u) --game->readyStepsRemaining;
+        if (game->readyStepsRemaining == 0u) {
+            game->playState = PlayState::Playing;
+            game->readyTextVisible = false;
+            game->gameplayResumed = true;
+            game->visualDirty = true;
+        }
         ++game->simulationSteps;
         return;
     }
@@ -1921,6 +1992,7 @@ void game_update(GameState* game) {
     if (!game->suppressGhostCollisionsForValidation) resolve_ghost_collisions(game);
     resolve_fruit_collision(game);
     update_fruit_timer(game);
+    advance_power_pill_animation(game);
     ++game->frightenedFlashPhase;
     game->frightenedFlashPhase %= 16u;
     ++game->simulationSteps;

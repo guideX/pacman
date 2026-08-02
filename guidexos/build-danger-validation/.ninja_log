@@ -1,0 +1,27 @@
+# ninja log v7
+6	131	8070449345460248	native-objects/bitmap_loader.o	e2cbbeb233eae04c
+6	131	8070449345460248	D:/dev/pacman/guidexos/build-danger-validation/native-objects/bitmap_loader.o	e2cbbeb233eae04c
+37	144	8070449345612033	native-objects/level_rules.o	fa4bbfed773be25c
+37	144	8070449345612033	D:/dev/pacman/guidexos/build-danger-validation/native-objects/level_rules.o	fa4bbfed773be25c
+27	156	8070449345612033	native-objects/level.o	1785cc730062dc01
+27	156	8070449345612033	D:/dev/pacman/guidexos/build-danger-validation/native-objects/level.o	1785cc730062dc01
+17	214	8070449346324843	native-objects/game.o	54738024e1ce735f
+17	214	8070449346324843	D:/dev/pacman/guidexos/build-danger-validation/native-objects/game.o	54738024e1ce735f
+132	257	8070449346732073	native-objects/main.o	ff8a242dcb2ecf3c
+132	257	8070449346732073	D:/dev/pacman/guidexos/build-danger-validation/native-objects/main.o	ff8a242dcb2ecf3c
+144	262	8070449346778999	native-objects/renderer.o	1d0e152465e2a515
+144	262	8070449346778999	D:/dev/pacman/guidexos/build-danger-validation/native-objects/renderer.o	1d0e152465e2a515
+262	347	8070449347663408	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	18dde30ab10f76a2
+348	583	8070449347769438	CMakeFiles/pacman-danger-validation.util	643cf634da8f967b
+5	146	8070449698202845	native-objects/main.o	ff8a242dcb2ecf3c
+5	146	8070449698202845	D:/dev/pacman/guidexos/build-danger-validation/native-objects/main.o	ff8a242dcb2ecf3c
+146	236	8070449699178357	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	18dde30ab10f76a2
+237	478	8070449699269176	CMakeFiles/pacman-danger-validation.util	643cf634da8f967b
+6	113	8070451314233889	native-objects/main.o	ff8a242dcb2ecf3c
+6	113	8070451314233889	D:/dev/pacman/guidexos/build-danger-validation/native-objects/main.o	ff8a242dcb2ecf3c
+113	198	8070451315099196	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	18dde30ab10f76a2
+199	416	8070451315199024	CMakeFiles/pacman-danger-validation.util	643cf634da8f967b
+4	113	8070451902142965	native-objects/main.o	ff8a242dcb2ecf3c
+4	113	8070451902142965	D:/dev/pacman/guidexos/build-danger-validation/native-objects/main.o	ff8a242dcb2ecf3c
+113	206	8070451903118166	D:/dev/pacman/guidexos/bin/amd64/pacman-danger-validation.elf	18dde30ab10f76a2
+206	444	8070451903228149	CMakeFiles/pacman-danger-validation.util	643cf634da8f967b

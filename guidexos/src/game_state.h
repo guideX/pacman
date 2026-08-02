@@ -13,6 +13,7 @@ enum class Direction : int8_t {
 };
 
 enum class PlayState : uint8_t {
+    InitialReady,
     Playing,
     Dying,
     ReadyAfterDeath,
@@ -138,6 +139,11 @@ struct GameState {
     HeldDirections held;
     bool focused;
     bool visualDirty;
+    bool powerPillVisible;
+    uint32_t powerPillBlinkStepsRemaining;
+    bool readyTextVisible;
+    uint32_t readyFlashStepsRemaining;
+    uint32_t highScore;
     bool turnAccepted;
     bool becameBlocked;
     bool tunnelWrapped;
@@ -161,6 +167,7 @@ struct GameState {
     uint32_t fruitScoreAwardedValue;
     bool fruitReset;
     bool scoreChanged;
+    bool highScoreChanged;
     bool extraLifeThresholdCrossed;
     bool extraLifeAwarded;
     bool extraLifeSuppressed;

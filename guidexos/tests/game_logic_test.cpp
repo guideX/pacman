@@ -2609,6 +2609,90 @@ bool test_fruit_and_extra_life() {
     return ok;
 }
 
+bool test_session_hud_and_power_pill_blink() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    ok &= expect(game.score == 0u && game.lives == kPacManInitialLives &&
+                 game.levelNumber == 1u && game.highScore == kPacManInitialHighScore,
+                 "session starts with historical score, lives, level, and high score");
+
+    game_begin_initial_ready(&game);
+    const int initialX = game.pacman.x;
+    ok &= expect(game.playState == PlayState::InitialReady && game.readyTextVisible &&
+                 game.readyStepsRemaining == kPacManInitialReadyDurationSteps,
+                 "initial session enters an explicit Ready presentation");
+    game_press_direction(&game, Direction::Left);
+    game_update(&game);
+    ok &= expect(game.pacman.x == initialX && game.playState == PlayState::InitialReady,
+                 "movement input is blocked before initial Ready completes");
+    for (uint32_t step = 1u; step < kPacManInitialReadyDurationSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing && !game.readyTextVisible,
+                 "initial Ready exits deterministically into Playing");
+
+    game.score = 10000u;
+    game.highScore = 10000u;
+    game.lifeAward.thresholdsAwardedMask = 1u;
+    award_score(game, 2u);
+    ok &= expect(game.highScore == 10002u && game.highScoreChanged,
+                 "high score updates immediately when score exceeds it");
+    game.playState = PlayState::GameOver;
+    ok &= expect(game_restart_session(&game) && game.score == 0u &&
+                 game.highScore == 10002u,
+                 "in-memory high score survives Game Over restart");
+
+    game_initialize(&game);
+    game.pacman.direction = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.facingDirection = Direction::Right;
+    game.pacman.speed = 0;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) game.ghosts[index].active = false;
+    ok &= expect(game.powerPillVisible &&
+                 game.powerPillBlinkStepsRemaining == kPacManPowerPillBlinkIntervalSteps,
+                 "power pills begin in the visible phase");
+    for (uint32_t step = 0; step + 1u < kPacManPowerPillBlinkIntervalSteps; ++step) game_update(&game);
+    ok &= expect(game.powerPillVisible && game.powerPillBlinkStepsRemaining == 1u,
+                 "power-pill blink does not toggle before its exact boundary");
+    game_update(&game);
+    ok &= expect(!game.powerPillVisible && game.powerPillBlinkStepsRemaining ==
+                 kPacManPowerPillBlinkIntervalSteps,
+                 "power-pill blink toggles at the fixed-step boundary");
+    for (uint32_t step = 0; step < kPacManPowerPillBlinkIntervalSteps; ++step) game_update(&game);
+    ok &= expect(game.powerPillVisible, "power-pill blink repeats deterministically");
+
+    game.powerPillVisible = false;
+    set_before_target(&game, 1, 23, Direction::Left);
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.powerPillConsumed && game.score == kPacManPowerPillScore &&
+                 game.level.powerPillsRemaining == 3u &&
+                 game.level.cells[23][1] == CellType::Empty,
+                 "hidden power pills remain logical and consumable");
+    game.powerPillVisible = true;
+    game_update(&game);
+    ok &= expect(game.level.cells[23][1] == CellType::Empty,
+                 "consumed power pills never reappear in a later visible phase");
+
+    game_initialize(&game);
+    keep_only_power_target(&game, 2, 1);
+    game.powerPillVisible = false;
+    set_before_target(&game, 2, 1, Direction::Right);
+    game.pacman.speed = 0;
+    game_update(&game);
+    ok &= expect(game.powerPillConsumed && game.playState == PlayState::LevelComplete &&
+                 game.level.totalConsumablesRemaining == 0u,
+                 "hidden final power pill remains consumable and completes the level");
+
+    game.playState = PlayState::GameOver;
+    ok &= expect(game_restart_session(&game) && game.powerPillVisible &&
+                 game.level.powerPillsRemaining == 4u,
+                 "new game resets the shared blink phase and four power pills");
+    game_reset_level(&game);
+    ok &= expect(game.powerPillVisible && game.level.powerPillsRemaining == 4u,
+                 "new level resets the shared blink phase");
+    return ok;
+}
+
 }
 
 int main() {
@@ -2646,6 +2730,7 @@ int main() {
     ok &= test_game_over_and_restart();
     ok &= test_level_rules_and_consecutive_progression();
     ok &= test_fruit_and_extra_life();
+    ok &= test_session_hud_and_power_pill_blink();
     std::cout << (ok ? "PacMan game logic tests PASS\n" : "PacMan game logic tests FAIL\n");
     return ok ? 0 : 1;
 }

@@ -40,8 +40,8 @@ LevelRules calculate_level_rules(uint32_t level) {
     rules.frightenedFlashStartSteps = 200u;
 
     // The source's ordinary Ready path flashes three times (six 500 ms timer
-    // callbacks after a life).  Native has no sound dependency and retains
-    // the existing bounded 60 fixed-step Ready presentation for level starts.
-    rules.readyDurationSteps = 60u;
+    // callbacks after a life). The first-go path uses nine callbacks; the
+    // native session keeps those source durations in fixed 10 ms steps.
+    rules.readyDurationSteps = 300u;
     return rules;
 }

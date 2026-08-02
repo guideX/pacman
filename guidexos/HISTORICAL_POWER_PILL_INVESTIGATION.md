@@ -119,3 +119,36 @@ chain, and all 244 consumables.
 
 No Chase/Scatter system, sound, fruit, extra-life award, PRNG, or arcade-only
 power-pill behavior was added.
+
+## Power-pill visibility polish (2026-07-29)
+
+The source search for `Blink`, `Flash`, `PowerPill`, `RefreshLevel`, timer
+events, and visibility changes found no power-pill blink implementation.
+`frmPacMan.frm:524-536` uses `tmrFlash` only to alternate the `lblInsert`
+foreground color, and `basPacSetUp.bas:513-548` draws each power pill once
+from the level cell. Power-pill visibility in the original is therefore
+logical-cell driven, not timer driven.
+
+The requested native polish uses the smallest deterministic approximation:
+
+```text
+initial phase: visible
+shared cadence: 50 fixed 10 ms simulation steps (500 ms)
+toggle boundary: the update that decrements the countdown from 1 to 0
+scope: all remaining power pills share one phase
+logical state: unchanged while hidden; CellType::PowerPill remains present
+reset: game initialization, new level, and new-game restart
+stopped states: no phase advancement outside Playing, matching the source's
+            disabled keyboard timer during Ready, death, level completion,
+            and Game Over
+```
+
+The renderer draws a power pill only when the shared `powerPillVisible` phase
+is true. It always starts from the retained clean background and never writes
+visibility into `LevelState::cells`, so a hidden pill remains consumable and a
+consumed pill cannot be restored by a later visible phase. Normal pills are
+not affected. The cadence is simulation-driven and independent of repaint or
+capture frequency. The 500 ms value is derived from the only historical
+presentation timer, but the source does not establish that this timer was
+intended for power pills; it must not be described as a historical gameplay
+timing fact.

@@ -152,7 +152,7 @@ The values below are taken from `basPacSetUp.bas` and `basPacman.bas`, not infer
 
 `TestCollisions` uses strict center thresholds `Abs(Pacman.Xpos - Ghost.Xpos) < 16` and `Abs(Pacman.Ypos - Ghost.Ypos) < 16`. The native collision helper applies the same rule to active ghosts and never samples rendered pixels; Pink is collision-inactive until it reaches its normal outside-house route.
 
-Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 60-step ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames. The compact HUD shows reserve lives (`total - 1`) to match the source's `ShowLives` semantics, including zero in Game Over.
+Historical `PacDied` decrements lives immediately, resets the actors when lives remain, and stops the keyboard timer on the final life. The native port preserves score, consumed pills, remaining count, and level across ordinary death, adds a bounded 100-step death state plus a 300-step Ready pause, and shows a native `DEATH` indicator because the historical sheet has no dedicated death frames. The HUD draws reserve-life icons (`total - 1`) and right-to-left fruit history to match the source's `ShowLives` semantics, including zero reserve icons in Game Over. Standalone launch begins in an explicit 450-step `InitialReady` state; the source's nine-callback first-go wait is coupled to omitted opening music.
 
 Power pills score 10, disappear, and activate the source-supported per-ghost
 frightened lifecycle. Each eligible ghost has its own level/speed-scaled
@@ -377,6 +377,19 @@ cmake -S . -B build-power-validation -G Ninja -DPACMAN_HOSTED_DANGER_TEST=ON -DP
 cmake --build build-power-validation --target pacman-danger-validation
 powershell -ExecutionPolicy Bypass -File tools\validate_hosted_power_pill.ps1
 ```
+
+## Session, HUD, and power-pill visibility milestone
+
+The native top strip now follows the historical SCORE/value and right-aligned
+HI SCORE/value arrangement. High score starts at 10,000, updates immediately
+when the current score exceeds it, and survives Game Over restart in memory
+only. The bottom strip shows spare Pac-Man icons and the level fruit history
+from the actual sprite/mask sheet. The source contains no pause key, high-score
+file persistence, score popup, maze-flash sequence, attract mode, or power-pill
+blink. The requested power-pill polish is a shared, initially visible 500 ms
+fixed-step approximation; it never mutates logical cells and stops whenever
+gameplay simulation is stopped. The complete source-backed inventory is in
+[HISTORICAL_SESSION_AND_HUD_INVESTIGATION.md](HISTORICAL_SESSION_AND_HUD_INVESTIGATION.md).
 
 ## Current limitations and next milestone
 

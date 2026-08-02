@@ -47,13 +47,13 @@ static void pill(uint32_t* frame, int centerX, int centerY, int radius, uint32_t
     }
 }
 
-static void draw_pills(uint32_t* frame, const LevelState& level) {
+static void draw_pills(uint32_t* frame, const GameState& game) {
     for (int y = 0; y < kPacManMazeRows; ++y) {
         for (int x = 0; x < kPacManMazeColumns; ++x) {
-            const CellType cell = level.cells[y][x];
+            const CellType cell = game.level.cells[y][x];
             if (cell == CellType::Pill) {
                 pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 2, 0x00FFC8A0u);
-            } else if (cell == CellType::PowerPill) {
+            } else if (cell == CellType::PowerPill && game.powerPillVisible) {
                 pill(frame, x * kPacManTileSize + 8, y * kPacManTileSize + 8, 6, 0x00FFFFFFu);
             }
         }
@@ -170,19 +170,43 @@ static void draw_number(uint32_t* frame, int x, int y, uint32_t value, uint32_t 
     }
 }
 
+static int number_digit_count(uint32_t value) {
+    int length = 1;
+    while (value >= 10u) {
+        value /= 10u;
+        ++length;
+    }
+    return length;
+}
+
+static void draw_number_right(uint32_t* frame, int right, int y, uint32_t value,
+                              uint32_t color, int scale) {
+    draw_number(frame, right - number_digit_count(value) * 6 * scale, y, value, color, scale);
+}
+
 static void draw_status(uint32_t* frame, const GameState& game) {
     const uint32_t color = 0x00FFFFFFu;
-    draw_text(frame, 10, 10, "SCORE:", color, 1);
-    draw_number(frame, 52, 10, game.score, color, 1);
-    draw_text(frame, 190, 10, "LIVES:", color, 1);
-    // ShowLives in the VB6 source renders Lives - 1 reserve Pac-Man icons.
-    // The native HUD keeps its compact numeric presentation but preserves
-    // those reserve-life semantics; GameState::lives remains the total life
-    // counter used by the death state.
+    draw_text(frame, 4, 2, "SCORE", color, 1);
+    draw_number(frame, 96, 2, game.score, color, 1);
+    draw_number_right(frame, 329, 2, game.highScore, color, 1);
+    draw_text(frame, 332, 2, "HI SCORE", color, 1);
+}
+
+static void draw_bottom_hud(const PacImage* sprites, uint32_t* frame, const GameState& game) {
+    if (!sprites) return;
     const uint32_t spareLives = game.lives > 0u ? game.lives - 1u : 0u;
-    draw_number(frame, 232, 10, spareLives, color, 1);
-    draw_text(frame, 300, 10, "LEVEL:", color, 1);
-    draw_number(frame, 342, 10, game.levelNumber, color, 1);
+    const uint32_t visibleLives = spareLives > 14u ? 14u : spareLives;
+    for (uint32_t index = 0; index < visibleLives; ++index) {
+        draw_sprite(sprites, frame, static_cast<int>(index * 32u), 488, 96, 224, 224);
+    }
+
+    const uint32_t historyCount = game.levelNumber > kPacManHistoricalMaximumLevel
+        ? kPacManHistoricalMaximumLevel : game.levelNumber;
+    for (uint32_t index = 0; index < historyCount; ++index) {
+        const FruitRules rules = calculate_fruit_rules(index + 1u);
+        draw_sprite(sprites, frame, 416 - static_cast<int>(index * 32u), 488,
+                    rules.sprite.x, rules.sprite.y, rules.mask.x);
+    }
 }
 
 static int safe_direction_index(Direction direction) {
@@ -300,7 +324,6 @@ bool build_background_frame(const PacImage* level, uint32_t* backgroundPixels, u
 
     fill(backgroundPixels, 0x00000000u);
     copy_level(level, backgroundPixels);
-    draw_text(backgroundPixels, 80, 536, "ARROWS MOVE - ESC TO EXIT", 0x00FFFFFFu, 1);
     return true;
 }
 
@@ -312,8 +335,9 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
         sprites->strideBytes < sprites->width * 4u) return false;
 
     copy_pixels(backgroundPixels, framePixels);
-    draw_pills(framePixels, game->level);
+    draw_pills(framePixels, *game);
     draw_status(framePixels, *game);
+    draw_bottom_hud(sprites, framePixels, *game);
     draw_fruit(sprites, framePixels, *game);
     int mouthFrame = game->pacman.mouth;
     if (mouthFrame < 1 || mouthFrame > 3) mouthFrame = 3;
@@ -330,7 +354,8 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
         draw_sprite(sprites, framePixels, game->pacman.x - 16, game->pacman.y - 16,
                     sourceX, deathSourceY, sourceX + 128);
         draw_text(framePixels, 190, 270, "DEATH", 0x00FF4040u, 2);
-    } else if (game->playState == PlayState::ReadyAfterDeath) {
+    } else if ((game->playState == PlayState::InitialReady ||
+                game->playState == PlayState::ReadyAfterDeath) && game->readyTextVisible) {
         draw_text(framePixels, 200, 270, "READY", 0x00FFFF00u, 2);
     } else if (game->playState == PlayState::LevelComplete) {
         draw_text(framePixels, 140, 270, "LEVEL COMPLETE", 0x00FFFF00u, 2);
