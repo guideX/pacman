@@ -1,6 +1,0 @@
-gui.start
-vnc.start 5901
-desktop.launch Nexgen PacMan
-bus.pop codex.vnc.wait 60000
-nativeapp.processes
-exit
