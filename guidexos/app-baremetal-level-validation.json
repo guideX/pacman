@@ -25,7 +25,8 @@
     "log",
     "window",
     "draw",
-    "file.read"
+    "file.read",
+    "audio.output"
   ],
   "defaultWindow": {
     "width": 480,

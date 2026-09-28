@@ -17,6 +17,6 @@
     "abi": "guidexos-c-abi-v1",
     "runtime": "native-elf"
   }],
-  "permissions": ["log", "window", "draw", "file.read"],
+  "permissions": ["log", "window", "draw", "file.read", "audio.output"],
   "defaultWindow": {"width": 480, "height": 640, "resizable": false}
 }

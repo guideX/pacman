@@ -3,6 +3,7 @@
 #include "bitmap_loader.h"
 #include "game.h"
 #include "game_types.h"
+#include "pacman_audio_runtime.h"
 #include "renderer.h"
 
 #ifndef PACMAN_ENABLE_DIAGNOSTICS
@@ -1138,6 +1139,12 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     }
     pacbm_marker(ctx, "PACBM 06 SPRITE_RESOURCE_LOADED");
     ctx->host->log(ctx, "PacMan resources loaded");
+    const uint32_t loadedAudioResources = pacman_audio_load_resources(ctx);
+    if (loadedAudioResources == 6u) {
+        ctx->host->log(ctx, "PacMan audio resources loaded");
+    } else {
+        ctx->host->log(ctx, "PacMan audio resources partial; unavailable cues stay silent");
+    }
     if (!level.pixels) {
         ctx->host->log(ctx, "PacMan background invariant failed: level pixels null");
     } else if (level.width != kPacManWidth) {
@@ -1158,6 +1165,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     GameState game;
     game_initialize(&game);
     game_begin_initial_ready(&game);
+    PacManAudioState audioState{};
+    pacman_audio_initialize(&audioState);
+    pacman_audio_start_session(&audioState, pacman_audio_submit, ctx);
     ctx->host->log(ctx, "PacMan game initialization complete");
 #if PACMAN_ENABLE_DIAGNOSTICS
     ctx->host->log(ctx, "PacMan initial session state: InitialReady");
@@ -1327,6 +1337,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 if (event.param2 == GX_KEY_ACTION_DOWN && game.playState == PlayState::GameOver &&
                     (event.param1 == kPacManRestartKeyEnter || event.param1 == kPacManRestartKeySpace)) {
                     if (game_restart_session(&game)) {
+                        pacman_audio_reset_for_new_session(&audioState);
+                        pacman_audio_start_session(&audioState, pacman_audio_submit, ctx);
 #if PACMAN_ENABLE_DIAGNOSTICS
                         ctx->host->log(ctx, "PacMan session restarted");
 #endif
@@ -1494,6 +1506,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (traceUpdate) pacbm_marker(ctx, "PACBM 16 UPDATE_BEGIN");
 #endif
             game_update(&game);
+            pacman_audio_process_game_events(&audioState, &game, pacman_audio_submit, ctx);
 #if PACMAN_ENABLE_DIAGNOSTICS
             if (traceUpdate) {
                 pacbm_marker(ctx, "PACBM 17 UPDATE_END");

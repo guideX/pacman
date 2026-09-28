@@ -16,6 +16,7 @@ set(GUIDEXOS_SERVER_ROOT "D:/dev/guideXOSServer" CACHE PATH "guideXOS Server rep
 set(GUIDEXOS_PACKAGE_ROOT "D:/Apps" CACHE PATH "guideXOS package root scanned by the hosted app registry")
 set(GUIDEXOS_SDK_ROOT "${GUIDEXOS_SERVER_ROOT}/sdk")
 set(GUIDEXOS_APP_ROOT "${CMAKE_CURRENT_LIST_DIR}")
+set(GUIDEXOS_AUDIO_SOURCE_ROOT "${GUIDEXOS_APP_ROOT}/..")
 set(GUIDEXOS_LOCAL_BIN_DIR "${GUIDEXOS_APP_ROOT}/bin/${GUIDEXOS_APP_ARCH}")
 
 set(GUIDEXOS_CLANG "C:/Program Files/LLVM/bin/clang++.exe" CACHE FILEPATH "LLVM clang++ used for the freestanding ELF objects")
@@ -169,12 +170,13 @@ set(GUIDEXOS_LEVEL_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/level.o")
 set(GUIDEXOS_LEVEL_RULES_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/level_rules.o")
 set(GUIDEXOS_RENDERER_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/renderer.o")
 set(GUIDEXOS_LOADER_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/bitmap_loader.o")
-set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUIDEXOS_LEVEL_OBJECT}" "${GUIDEXOS_LEVEL_RULES_OBJECT}" "${GUIDEXOS_RENDERER_OBJECT}" "${GUIDEXOS_LOADER_OBJECT}")
+set(GUIDEXOS_AUDIO_OBJECT "${GUIDEXOS_BUILD_OBJ_DIR}/pacman_audio.o")
+set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUIDEXOS_LEVEL_OBJECT}" "${GUIDEXOS_LEVEL_RULES_OBJECT}" "${GUIDEXOS_RENDERER_OBJECT}" "${GUIDEXOS_LOADER_OBJECT}" "${GUIDEXOS_AUDIO_OBJECT}")
 
 add_custom_command(OUTPUT "${GUIDEXOS_MAIN_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} ${PACMAN_POWER_PILL_TEST_DEFINITION} ${PACMAN_LEVEL_TEST_DEFINITION} ${PACMAN_BAREMETAL_LEVEL_DEFINITION} ${PACMAN_FRUIT_TEST_DEFINITION} ${PACMAN_BAREMETAL_FRUIT_DEFINITION} ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
-    DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/level_rules.h src/bitmap_loader.h src/renderer.h
+    DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/level_rules.h src/bitmap_loader.h src/pacman_audio.h src/pacman_audio_runtime.h src/renderer.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_GAME_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
@@ -201,6 +203,11 @@ add_custom_command(OUTPUT "${GUIDEXOS_LOADER_OBJECT}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/bitmap_loader.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_LOADER_OBJECT}"
     DEPENDS src/bitmap_loader.cpp src/bitmap_loader.h src/game_types.h
 )
+add_custom_command(OUTPUT "${GUIDEXOS_AUDIO_OBJECT}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
+    COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/pacman_audio.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_AUDIO_OBJECT}"
+    DEPENDS src/pacman_audio.cpp src/pacman_audio.h src/pacman_audio_runtime.h src/game_state.h
+)
 add_custom_command(OUTPUT "${GUIDEXOS_ELF}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_LOCAL_BIN_DIR}"
     COMMAND "${GUIDEXOS_LLD}" -m elf_x86_64 -static -e gx_main ${GUIDEXOS_OBJECTS} -o "${GUIDEXOS_ELF}"
@@ -213,6 +220,11 @@ add_executable(pacman-game-tests tests/game_logic_test.cpp src/game.cpp src/leve
 target_include_directories(pacman-game-tests PRIVATE "${GUIDEXOS_SDK_ROOT}/include" "${GUIDEXOS_APP_ROOT}/src")
 set_target_properties(pacman-game-tests PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 
+add_executable(pacman-audio-tests tests/audio_test.cpp src/pacman_audio.cpp src/game.cpp src/level.cpp src/level_rules.cpp)
+target_include_directories(pacman-audio-tests PRIVATE "${GUIDEXOS_SDK_ROOT}/include" "${GUIDEXOS_APP_ROOT}/src")
+target_compile_definitions(pacman-audio-tests PRIVATE PACMAN_AUDIO_ASSET_ROOT="${GUIDEXOS_AUDIO_SOURCE_ROOT}")
+set_target_properties(pacman-audio-tests PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+
 add_custom_command(TARGET ${GUIDEXOS_NATIVE_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_STAGED_APP_DIR}/bin/${GUIDEXOS_APP_ARCH}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_STAGED_APP_DIR}/resources"
@@ -222,3 +234,23 @@ add_custom_command(TARGET ${GUIDEXOS_NATIVE_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${GUIDEXOS_APP_ROOT}/resources/generated/pacpics.gximg" "${GUIDEXOS_STAGED_APP_DIR}/resources/pacpics.gximg"
     COMMENT "Staging guideXOS PacMan package under the hosted /Apps package root"
 )
+
+# Stage the original parent-project WAV assets into the ordinary Native ELF
+# resources tree; Pac-Man reads them with the App Model file.read API.
+set(GUIDEXOS_AUDIO_FILES EatPill.wav StartMusic.wav startmusicold.wav ghosteat.wav killed.wav fruiteat.wav extralife.wav)
+set(GUIDEXOS_AUDIO_COPY_COMMANDS)
+set(GUIDEXOS_AUDIO_SOURCE_DEPENDS)
+foreach(audio_file IN LISTS GUIDEXOS_AUDIO_FILES)
+    list(APPEND GUIDEXOS_AUDIO_COPY_COMMANDS
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${GUIDEXOS_AUDIO_SOURCE_ROOT}/${audio_file}"
+            "${GUIDEXOS_STAGED_APP_DIR}/resources/audio/${audio_file}")
+    list(APPEND GUIDEXOS_AUDIO_SOURCE_DEPENDS "${GUIDEXOS_AUDIO_SOURCE_ROOT}/${audio_file}")
+endforeach()
+add_custom_target(pacman-audio-resources ALL
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_STAGED_APP_DIR}/resources/audio"
+    ${GUIDEXOS_AUDIO_COPY_COMMANDS}
+    DEPENDS ${GUIDEXOS_AUDIO_SOURCE_DEPENDS}
+    COMMENT "Staging original PacMan WAV resources"
+)
+add_dependencies(${GUIDEXOS_NATIVE_TARGET} pacman-audio-resources)
