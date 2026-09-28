@@ -225,8 +225,8 @@ try {
     $fourth = Wait-ForFrame $second.Sequence { param($f) $f.Chain -eq 4 } 12000
     if ($null -eq $fourth) { throw 'Fourth score-chain step was not observed.' }
     [void](Sync-Capture $fourth 'fourth-ghost-eaten')
-    $expired = Wait-ForFrame $fourth.Sequence { param($f) $f.Chain -eq 4 -and $f.RedCondition -eq 'normal' -and $f.RedTimer -eq 0 } 12000
-    if ($null -eq $expired) { throw 'Frightened expiration/normal restoration was not observed.' }
+    $expired = Wait-ForFrame $fourth.Sequence { param($f) $f.Chain -eq 0 -and $f.RedCondition -eq 'normal' -and $f.RedTimer -eq 0 } 12000
+    if ($null -eq $expired) { throw 'Frightened expiration, combo reset, and normal restoration were not observed.' }
     [void](Sync-Capture $expired 'frightened-expired-normal')
 
     $raw = Read-RawLog
@@ -237,6 +237,7 @@ try {
     $results.Add("flashing-log=$([bool]($raw -match 'PacMan frightened flashing began'))")
     $results.Add("eaten-log=$([bool]($raw -match 'PacMan ghost eaten'))")
     $results.Add("score-sequence=$([bool]($raw -match 'ghost-eating score awarded: 200') -and [bool]($raw -match 'ghost-eating score awarded: 400') -and [bool]($raw -match 'ghost-eating score awarded: 800') -and [bool]($raw -match 'ghost-eating score awarded: 1600'))")
+    $results.Add("combo-reset-on-expiration=$([bool]($expired.Chain -eq 0))")
     $results.Add("expiration-log=$([bool]($raw -match 'PacMan ghost timer expired'))")
     Escape-And-Wait
     $results.Add('escape-and-zero-window-cleanup=pass')

@@ -411,6 +411,66 @@ static bool test_event_mapping_and_alternation() {
     pacman_audio_start_session(&audio, record_sound, &recorder);
     ok &= expect(recorder.sounds[10] == kPacManSoundStartMusic && recorder.count == 11u,
         "new session resets one-shot start-music state");
+
+    PacManAudioState eatenAudio{};
+    pacman_audio_initialize(&eatenAudio);
+    Recorder eatenRecorder{};
+    eatenRecorder.result = kPacManAudioAccepted;
+    GameState eatenGame{};
+    game_initialize(&eatenGame);
+    eatenGame.playState = PlayState::Playing;
+    eatenGame.pacman.direction = Direction::None;
+    eatenGame.pacman.facingDirection = Direction::None;
+    eatenGame.pacman.requestedDirection = Direction::None;
+    eatenGame.pacman.speed = 0;
+    for (uint32_t index = 1; index < 4u; ++index) {
+        eatenGame.ghosts[index].active = false;
+        eatenGame.ghosts[index].collisionActive = false;
+    }
+    GhostState& eatenRed = eatenGame.ghosts[0];
+    eatenRed.x = eatenGame.pacman.x;
+    eatenRed.y = eatenGame.pacman.y;
+    eatenRed.speed = 0;
+    eatenRed.condition = GhostCondition::Frightened;
+    eatenRed.powerPillStepsRemaining = 10u;
+    eatenRed.collisionActive = true;
+    game_update(&eatenGame);
+    const bool transitionedToEaten = eatenGame.ghostEaten[0] &&
+        eatenRed.condition == GhostCondition::Eaten && eatenGame.score == 200u;
+    pacman_audio_process_game_events(&eatenAudio, &eatenGame, record_sound, &eatenRecorder);
+    game_update(&eatenGame);
+    pacman_audio_process_game_events(&eatenAudio, &eatenGame, record_sound, &eatenRecorder);
+    ok &= expect(transitionedToEaten && !eatenGame.ghostEaten[0] &&
+        eatenRecorder.count == 1u && eatenRecorder.sounds[0] == kPacManSoundGhostEaten,
+        "ghosteat audio fires once for the actual frightened-to-eaten transition");
+
+    PacManAudioState lethalAudio{};
+    pacman_audio_initialize(&lethalAudio);
+    Recorder lethalRecorder{};
+    lethalRecorder.result = kPacManAudioAccepted;
+    GameState lethalGame{};
+    game_initialize(&lethalGame);
+    lethalGame.playState = PlayState::Playing;
+    lethalGame.pacman.direction = Direction::None;
+    lethalGame.pacman.facingDirection = Direction::None;
+    lethalGame.pacman.requestedDirection = Direction::None;
+    lethalGame.pacman.speed = 0;
+    for (uint32_t index = 1; index < 4u; ++index) {
+        lethalGame.ghosts[index].active = false;
+        lethalGame.ghosts[index].collisionActive = false;
+    }
+    GhostState& normalRed = lethalGame.ghosts[0];
+    normalRed.x = lethalGame.pacman.x;
+    normalRed.y = lethalGame.pacman.y;
+    normalRed.speed = 0;
+    normalRed.condition = GhostCondition::Normal;
+    normalRed.collisionActive = true;
+    game_update(&lethalGame);
+    pacman_audio_process_game_events(&lethalAudio, &lethalGame, record_sound, &lethalRecorder);
+    ok &= expect(lethalGame.playState == PlayState::Dying && lethalGame.deathEntered &&
+        !lethalGame.ghostEaten[0] && lethalRecorder.count == 1u &&
+        lethalRecorder.sounds[0] == kPacManSoundKilled,
+        "ordinary lethal ghost collision plays death audio without ghosteat");
     return ok;
 }
 

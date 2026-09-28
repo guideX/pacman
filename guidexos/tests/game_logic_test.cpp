@@ -1320,25 +1320,48 @@ bool test_power_pill_timers_and_reversal() {
                  "a second power pill resets the score chain");
     for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
         ok &= expect(game.ghosts[index].condition == GhostCondition::Frightened &&
-                     game.ghosts[index].powerPillStepsRemaining == duration - 1u,
-                     "repeated power pill resets each eligible timer to full duration");
+                     game.ghosts[index].powerPillStepsRemaining == duration - 1u &&
+                     game.ghosts[index].direction == opposite_direction(Direction::Right) &&
+                     game.ghostReversalApplied[index],
+                     "repeated power pill resets each eligible timer and reverses each ghost again");
     }
 
     game.suppressGhostCollisionsForValidation = true;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game.ghosts[index].condition = GhostCondition::Normal;
+        game.ghosts[index].powerPillStepsRemaining = 0;
+        game.ghosts[index].speed = 0;
+    }
     GhostState& red = game.ghosts[0];
+    GhostState& pink = game.ghosts[1];
+    red.condition = GhostCondition::Frightened;
     red.powerPillStepsRemaining = 3;
+    pink.condition = GhostCondition::Frightened;
+    pink.powerPillStepsRemaining = 1;
+    game.ghostEatChain = 3;
     game_update(&game);
-    ok &= expect(red.powerPillStepsRemaining == 2 && red.condition == GhostCondition::Frightened,
-                 "frightened timer decrements once per fixed update");
+    ok &= expect(red.powerPillStepsRemaining == 2 && red.condition == GhostCondition::Frightened &&
+                 pink.condition == GhostCondition::Normal && game.ghostEatChain == 3u,
+                 "timer decrements once per fixed update and combo persists while one ghost remains frightened");
     game_update(&game);
     ok &= expect(red.powerPillStepsRemaining == 1,
                  "frightened timer reaches one without underflow");
     game_update(&game);
-    ok &= expect(red.powerPillStepsRemaining == 0 && red.condition == GhostCondition::Normal,
-                 "frightened expiration restores normal condition exactly once");
+    ok &= expect(red.powerPillStepsRemaining == 0 && red.condition == GhostCondition::Normal &&
+                 game.ghostEatChain == 0u,
+                 "last frightened timer expiration restores normal state and resets the combo");
     game_update(&game);
     ok &= expect(red.powerPillStepsRemaining == 0 && red.condition == GhostCondition::Normal,
                  "expired frightened timer remains bounded at zero");
+
+    red.condition = GhostCondition::Frightened;
+    red.powerPillStepsRemaining = threshold + 1u;
+    game_update(&game);
+    ok &= expect(red.powerPillStepsRemaining == threshold && !game.frightenedFlashingBegan[0],
+                 "flashing warning stays off at the exact threshold boundary");
+    game_update(&game);
+    ok &= expect(red.powerPillStepsRemaining == threshold - 1u && game.frightenedFlashingBegan[0],
+                 "flashing warning begins deterministically below the remaining-time threshold");
     return ok;
 }
 
@@ -1362,6 +1385,9 @@ bool test_frightened_speed_and_collision_order() {
     game_update(&game);
     ok &= expect(game.ghostEatChain == 4 && game.score == 10u + 200u + 400u + 800u + 1600u,
                  "four overlapping frightened ghosts use deterministic 200/400/800/1600 scoring");
+    ok &= expect(game.ghostEatScore[0] == 200u && game.ghostEatScore[1] == 400u &&
+                 game.ghostEatScore[2] == 800u && game.ghostEatScore[3] == 1600u,
+                 "each ghost receives its exact successive combo score");
     ok &= expect(game.ghosts[0].condition == GhostCondition::Eaten &&
                  !game.ghosts[0].collisionActive && game.ghostEaten[0],
                  "eaten ghost becomes non-lethal exactly once");
@@ -1464,8 +1490,9 @@ bool test_frightened_speed_and_collision_order() {
     game.pacman.offset = 1;
     game.pacman.speed = 0;
     game_update(&game);
-    ok &= expect(game.playState == PlayState::Dying && game.score == 200u,
-                 "ghost-index order awards earlier frightened score before later death");
+    ok &= expect(game.playState == PlayState::Dying && game.score == 200u &&
+                 game.ghostEatChain == 0u && red.condition == GhostCondition::Normal,
+                 "ghost-index order awards the eaten ghost once, then death clears the chain and ghost state");
     return ok;
 }
 
@@ -1473,6 +1500,10 @@ bool test_eaten_return_and_lifecycle_reset() {
     bool ok = true;
     GameState game{};
     game_initialize(&game);
+    game.ghostEatChain = 4u;
+    game_initialize(&game);
+    ok &= expect(game.ghostEatChain == 0u,
+                 "new game initialization clears a stale ghost-eating combo");
     disable_non_red_ghosts(&game);
     GhostState& red = game.ghosts[0];
     red.x = 208;
@@ -1505,6 +1536,35 @@ bool test_eaten_return_and_lifecycle_reset() {
     ok &= expect(returned, "eaten ghost follows the source gate bounce and returns to normal play");
 
     game_initialize(&game);
+    disable_non_red_ghosts(&game);
+    enable_normal_pink(&game);
+    GhostState& lethalRed = game.ghosts[0];
+    GhostState& frightenedPink = game.ghosts[1];
+    lethalRed.x = game.pacman.x;
+    lethalRed.y = game.pacman.y;
+    lethalRed.speed = 0;
+    lethalRed.condition = GhostCondition::Normal;
+    lethalRed.collisionActive = true;
+    frightenedPink.x = 100;
+    frightenedPink.y = 100;
+    frightenedPink.speed = 0;
+    frightenedPink.condition = GhostCondition::Frightened;
+    frightenedPink.powerPillStepsRemaining = 20;
+    frightenedPink.collisionActive = true;
+    game.pacman.direction = Direction::None;
+    game.pacman.facingDirection = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.pacman.speed = 0;
+    game.ghostEatChain = 3u;
+    game.frightenedFlashPhase = 9u;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.ghostEatChain == 0u &&
+                 game.frightenedFlashPhase == 0u &&
+                 frightenedPink.condition == GhostCondition::Normal &&
+                 frightenedPink.powerPillStepsRemaining == 0u,
+                 "death during another ghost's frightened interval clears timers, combo, and warning phase");
+
+    game_initialize(&game);
     game.ghosts[0].condition = GhostCondition::Frightened;
     game.ghosts[0].powerPillStepsRemaining = 20;
     game.ghostEatChain = 3;
@@ -1524,8 +1584,9 @@ bool test_eaten_return_and_lifecycle_reset() {
     game.pacman.offset = 1;
     game.pacman.speed = 0;
     game_update(&game);
-    ok &= expect(game.playState == PlayState::Dying && game.ghosts[1].powerPillStepsRemaining == 0,
-                 "death clears active frightened and returning timers");
+    ok &= expect(game.playState == PlayState::Dying && game.ghosts[1].powerPillStepsRemaining == 0 &&
+                 game.ghostEatChain == 0u,
+                 "death clears active frightened and returning timers and resets the combo");
 
     for (uint32_t step = 0; step < kPacManDeathDurationSteps + kPacManReadyAfterDeathSteps; ++step) {
         game_update(&game);

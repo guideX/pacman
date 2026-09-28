@@ -430,6 +430,16 @@ static void advance_power_pill_timer(GameState* game, GhostState* ghost) {
     if (ghost->powerPillStepsRemaining == 0) {
         ghost->condition = GhostCondition::Normal;
         game->ghostTimerExpired[static_cast<uint32_t>(ghost->kind)] = true;
+        bool anotherFrightenedGhost = false;
+        for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+            const GhostState& candidate = game->ghosts[index];
+            if (candidate.condition == GhostCondition::Frightened &&
+                candidate.powerPillStepsRemaining > 0u) {
+                anotherFrightenedGhost = true;
+                break;
+            }
+        }
+        if (!anotherFrightenedGhost) game->ghostEatChain = 0;
         game->visualDirty = true;
     }
 }
@@ -1294,6 +1304,8 @@ static void enter_dying(GameState* game) {
         else ghost.collisionActive = false;
     }
     if (encounterWasActive) game->powerPillEncounterReset = true;
+    game->ghostEatChain = 0;
+    game->frightenedFlashPhase = 0;
 
     game->playState = PlayState::Dying;
     game->collisionDetected = true;
@@ -2041,8 +2053,10 @@ void game_update(GameState* game) {
     resolve_fruit_collision(game);
     update_fruit_timer(game);
     advance_power_pill_animation(game);
-    ++game->frightenedFlashPhase;
-    game->frightenedFlashPhase %= 16u;
+    if (game->playState == PlayState::Playing) {
+        ++game->frightenedFlashPhase;
+        game->frightenedFlashPhase %= 16u;
+    }
     ++game->simulationSteps;
 }
 
