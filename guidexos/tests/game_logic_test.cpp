@@ -2202,10 +2202,10 @@ bool test_death_lives_and_reset() {
                  "one overlap consumes exactly one life");
     ok &= expect(game.score == scoreBefore && game.level.totalConsumablesRemaining == remainingBefore,
                  "score and remaining count are unchanged by death");
-    ok &= expect(!game.held.left && !game.held.right && !game.held.up && !game.held.down &&
+    ok &= expect(!game.held.left && game.held.right && !game.held.up && !game.held.down &&
                  game.pacman.direction == Direction::None &&
-                 game.pacman.requestedDirection == Direction::None,
-                 "death clears directional input");
+                 game.pacman.requestedDirection == Direction::Right,
+                 "death stops movement but preserves a still-held direction through Ready");
 
     const int dyingX = game.pacman.x;
     const int dyingY = game.pacman.y;
@@ -2224,8 +2224,9 @@ bool test_death_lives_and_reset() {
     ok &= expect(game.playState == PlayState::ReadyAfterDeath && game.actorReset,
                  "non-final death resets actors into ready pause");
     ok &= expect(game.pacman.x == 224 && game.pacman.y == 376 &&
-                 game.pacman.direction == Direction::Right && game.pacman.offset == 8,
-                 "Pac-Man reset restores historical start state");
+                 game.pacman.direction == Direction::Right && game.pacman.offset == 8 &&
+                 game.pacman.requestedDirection == Direction::Right && game.held.right,
+                 "Pac-Man reset restores spawn state while retaining the held Ready direction");
     ok &= expect(game.ghosts[0].x == 224 && game.ghosts[0].y == 184 &&
                  game.ghosts[1].x == 192 && game.ghosts[1].y == 224 &&
                  game.ghosts[2].x == 224 && game.ghosts[2].y == 240 &&
@@ -2693,6 +2694,106 @@ bool test_session_hud_and_power_pill_blink() {
     return ok;
 }
 
+bool test_ready_input_buffering() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game.ghosts[index].active = false;
+        game.ghosts[index].collisionActive = false;
+    }
+    game_begin_initial_ready(&game);
+    const int initialX = game.pacman.x;
+    game_press_direction(&game, Direction::Right);
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::InitialReady && game.pacman.x == initialX &&
+                 game.pacman.direction == Direction::None &&
+                 game.pacman.requestedDirection == Direction::Right,
+                 "direction pressed during initial Ready is buffered without moving Pac-Man");
+    for (uint32_t step = 1u; step < kPacManInitialReadyDurationSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing && game.pacman.direction == Direction::Right &&
+                 game.pacman.requestedDirection == Direction::Right,
+                 "held Ready direction resumes at the first Playing step");
+    game_update(&game);
+    ok &= expect(game.pacman.x == initialX + 1,
+                 "Pac-Man begins moving after initial Ready when a direction was held");
+
+    game_initialize(&game);
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game.ghosts[index].active = false;
+        game.ghosts[index].collisionActive = false;
+    }
+    game_begin_initial_ready(&game);
+    game_press_direction(&game, Direction::Up);
+    game_release_direction(&game, Direction::Up);
+    for (uint32_t step = 0; step < kPacManInitialReadyDurationSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing &&
+                 game.pacman.requestedDirection == Direction::None &&
+                 game.pacman.direction == Direction::None,
+                 "a direction released before Ready ends is not treated as held input");
+
+    game_initialize(&game);
+    for (uint32_t index = 1; index < kPacManGhostCount; ++index) {
+        game.ghosts[index].active = false;
+        game.ghosts[index].collisionActive = false;
+    }
+    game.pacman.direction = Direction::None;
+    game.pacman.offset = 0;
+    game.ghosts[0].x = game.pacman.x;
+    game.ghosts[0].y = game.pacman.y;
+    game.ghosts[0].speed = 0;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.lifeDecremented,
+                 "test enters the ordinary death and respawn path");
+    game_press_direction(&game, Direction::Up);
+    for (uint32_t step = 0; step < kPacManDeathDurationSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::ReadyAfterDeath &&
+                 game.pacman.requestedDirection == Direction::Up && game.held.up,
+                 "direction held through the death animation survives actor reset");
+    game_press_direction(&game, Direction::Right);
+    game_release_direction(&game, Direction::Right);
+    ok &= expect(game.pacman.requestedDirection == Direction::Up && game.held.up,
+                 "releasing a newer Ready direction restores another still-held key");
+    for (uint32_t step = 0; step < kPacManReadyAfterDeathSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing &&
+                 game.pacman.requestedDirection == Direction::Up,
+                 "direction held after losing a life is carried into gameplay");
+
+    game_release_direction(&game, Direction::Up);
+    game.playState = PlayState::GameOver;
+    game.pacman.requestedDirection = Direction::None;
+    game_press_direction(&game, Direction::Up);
+    ok &= expect(game.pacman.requestedDirection == Direction::None && !game.held.up,
+                 "direction input remains ignored on the Game Over screen");
+    ok &= expect(game_restart_session(&game) && game.playState == PlayState::ReadyAfterDeath,
+                 "Game Over restart begins a clean Ready interval");
+    game_press_direction(&game, Direction::Right);
+    for (uint32_t step = 0; step < kPacManReadyAfterDeathSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing &&
+                 game.pacman.requestedDirection == Direction::Right,
+                 "direction held during restart Ready starts the new session");
+
+    game_initialize(&game);
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        game.ghosts[index].active = false;
+        game.ghosts[index].collisionActive = false;
+    }
+    game.pacman.direction = Direction::None;
+    game.pacman.requestedDirection = Direction::None;
+    game.playState = PlayState::LevelComplete;
+    game.levelCompleteStepsRemaining = 1u;
+    game_press_direction(&game, Direction::Down);
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::ReadyAfterDeath &&
+                 game.pacman.requestedDirection == Direction::Down,
+                 "held direction survives the level reset into Ready");
+    for (uint32_t step = 0; step < kPacManReadyAfterDeathSteps; ++step) game_update(&game);
+    ok &= expect(game.playState == PlayState::Playing &&
+                 game.pacman.requestedDirection == Direction::Down,
+                 "level-transition Ready resumes with the held direction");
+    return ok;
+}
+
 }
 
 int main() {
@@ -2731,6 +2832,7 @@ int main() {
     ok &= test_level_rules_and_consecutive_progression();
     ok &= test_fruit_and_extra_life();
     ok &= test_session_hud_and_power_pill_blink();
+    ok &= test_ready_input_buffering();
     std::cout << (ok ? "PacMan game logic tests PASS\n" : "PacMan game logic tests FAIL\n");
     return ok ? 0 : 1;
 }
