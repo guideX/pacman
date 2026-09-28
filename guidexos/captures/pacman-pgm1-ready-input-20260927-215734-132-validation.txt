@@ -1,0 +1,5 @@
+run=20260927-215734-132
+server-wrapper-pid=33084
+error=Hosted compositor was not created.
+remaining-owned-server-processes=0
+server-wrapper-exit-code=0

@@ -2,7 +2,7 @@
 
 ## Outcome
 
-**Outcome B — substantially complete.** Pac-Man loads the original WAV resources, dispatches sounds from real gameplay event flags through the guideXOS App Model, and passes application-side tests. The package builds and stages correctly. A Pac-Man-specific runtime capture proving that its PCM reached the HDA backend was not obtained in this phase; the available QEMU audio evidence is from the generic guideXOS AudioBeep proof, not Pac-Man. The desktop already had a QEMU process running, so this phase did not take over its VM or shared firmware state.
+**Outcome B at the PSM1 close; runtime proof was completed in PSM2.** PSM1 loaded the original WAV resources, dispatched sounds from gameplay event flags through the guideXOS App Model, and passed application-side tests. It did not obtain a Pac-Man-specific HDA capture. PSM2 records the later isolated runtime submission and HDA capture in [PSM2_AUDIO_RUNTIME_REPORT.md](PSM2_AUDIO_RUNTIME_REPORT.md). The PSM2 product decision also supersedes PSM1's provisional start-cue choice: `startmusicold.wav` is now preferred.
 
 ## Starting repository state
 
@@ -27,13 +27,13 @@ All seven files are PCM format tag 1, unsigned 8-bit, mono. The data sizes below
 |---|---:|---:|---:|---:|---:|---:|---|
 | `ghosteat.wav` | 9,090 | 9,046 | 16,000 Hz | 8 | 1 | 0.565375 s | Direct PCM8 |
 | `EatPill.wav` | 7,156 | 7,063 | 22,050 Hz | 8 | 1 | 0.320317 s | Direct PCM8 |
-| `startmusicold.wav` | 46,592 | 46,490 | 11,025 Hz | 8 | 1 | 4.216780 s | Direct PCM8; unused |
-| `StartMusic.wav` | 68,318 | 68,226 | 16,000 Hz | 8 | 1 | 4.264125 s | First 4.000 s submitted |
+| `startmusicold.wav` | 46,592 | 46,490 | 11,025 Hz | 8 | 1 | 4.216780 s | Preferred start cue; first 4.000 s submitted |
+| `StartMusic.wav` | 68,318 | 68,226 | 16,000 Hz | 8 | 1 | 4.264125 s | Legacy fallback only; first 4.000 s submitted if preferred cue fails to load |
 | `extralife.wav` | 21,248 | 20,940 | 11,025 Hz | 8 | 1 | 1.899320 s | Direct PCM8 |
 | `killed.wav` | 17,008 | 16,916 | 11,025 Hz | 8 | 1 | 1.534331 s | Direct PCM8 |
 | `fruiteat.wav` | 5,120 | 4,845 | 11,025 Hz | 8 | 1 | 0.439456 s | Direct PCM8 |
 
-`StartMusic.wav` exceeds the App Model's four-second per-voice limit, so the application submits its first 64,000 samples (4 seconds at 16 kHz); the final 0.264125 seconds are omitted. `startmusicold.wav` remains staged but unused. The original VB6 `StartMusic` chooses `StartMusic.wav` when `Game.Enhanced` is true and `startmusicold.wav` otherwise. The native app has no legacy/non-Enhanced mode, so it uses `StartMusic.wav` only.
+Both candidate start cues exceed the App Model's four-second per-voice limit. The current mapping submits the first 44,100 samples of preferred `startmusicold.wav` (4 seconds at 11,025 Hz), omitting its final 0.216780 seconds. `StartMusic.wav` remains staged and is attempted only if `startmusicold.wav` fails to load or decode; its first 64,000 samples would then be submitted. PSM1 initially selected `StartMusic.wav`, but the PSM2 product decision intentionally changed the native default. The historical VB6 selection remains separate from this native-build choice.
 
 ## Event mapping
 
@@ -41,7 +41,7 @@ The original source changes two expected mappings: `basPacman.bas` plays `EatPil
 
 | Gameplay event | Submitted sound |
 |---|---|
-| New game start; Enter/Space restart after Game Over | `StartMusic.wav`, once per session start |
+| New game start; Enter/Space restart after Game Over | `startmusicold.wav`, once per session start; `StartMusic.wav` only if the preferred file fails to load or decode |
 | Ordinary pellet | Alternating waka A/B: supplied `EatPill.wav` for A; original synthesized 60 ms triangle PCM for B |
 | Power pellet consumed | `fruiteat.wav` (the historical source cue) |
 | Frightened ghost eaten | `ghosteat.wav` |
@@ -64,8 +64,8 @@ WAVs are loaded once before the game loop. PCM buffers and the generated waka B 
 - `pacman-game-tests.exe`: passed, 34 groups / 300 existing checks.
 - All production and validation manifests request `audio.output`.
 - Existing guideXOS proof artifacts dated 2026-09-22 report an HDA backend (`hda-48000-stereo-s16`), an App Model audio self-test with `dma=PASS`, and an AudioBeep app proof. The QEMU capture contains a nonzero PCM16 stereo 44.1 kHz payload (4,612,052 bytes; 542,188 nonzero samples). This verifies the generic guideXOS backend path, not Pac-Man's sound requests.
-- No Pac-Man launch, real gameplay input, Pac-Man `play_pcm` acceptance, or Pac-Man-to-HDA capture was completed. Human audibility was not tested. Therefore the generic server proof and fake-host tests are not presented as Pac-Man backend playback proof.
+- PSM1 did not complete a Pac-Man launch, real gameplay input, Pac-Man `play_pcm` acceptance, or Pac-Man-to-HDA capture. PSM2 subsequently performed the runtime proof described in [PSM2_AUDIO_RUNTIME_REPORT.md](PSM2_AUDIO_RUNTIME_REPORT.md).
 
 ## Remaining audio work
 
-The main remaining proof is an isolated guideXOS runtime run of this Pac-Man package with a fresh QEMU HDA capture while moving through actual gameplay events. A human listening check can follow that machine proof. A later polish pass could revisit the clipped tail of `StartMusic.wav` if the App Model offers a longer per-voice limit or a reliable sequenced-playback facility.
+The PSM2 isolated runtime run submits the preferred start cue and captures HDA output. The App Model's four-second per-voice limit remains unchanged; PSM2 observed that it cuts into the final fade of `startmusicold.wav`, as detailed in the runtime report.

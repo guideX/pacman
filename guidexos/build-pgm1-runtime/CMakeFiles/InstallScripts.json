@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/dev/pacman/guidexos/build-pgm1-runtime/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

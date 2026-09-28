@@ -5,7 +5,8 @@
 namespace {
 
 static const uint32_t kWavReadBufferBytes = 70000u;
-static const uint32_t kStartMusicCapacityFrames = 64000u; // 4.000 s at 16 kHz
+static const uint32_t kStartMusicFramesAtOldRate = 44100u; // 4.000 s at 11,025 Hz
+static const uint32_t kStartMusicFramesAtLegacyRate = 64000u; // 4.000 s at 16 kHz
 static const uint32_t kWakaBRate = 22050u;
 static const uint32_t kWakaBFrames = 1323u; // 60 ms
 
@@ -19,7 +20,7 @@ struct PacManVoice {
 };
 
 static unsigned char g_wavReadBuffer[kWavReadBufferBytes];
-static unsigned char g_startMusicPcm[kStartMusicCapacityFrames * 2u];
+static unsigned char g_startMusicPcm[kStartMusicFramesAtLegacyRate * 2u];
 static unsigned char g_eatPillPcm[7063u * 2u];
 static unsigned char g_powerPillPcm[4845u * 2u];
 static unsigned char g_ghostEatenPcm[9046u * 2u];
@@ -28,6 +29,7 @@ static unsigned char g_extraLifePcm[20940u * 2u];
 static int16_t g_wakaBPcm[kWakaBFrames];
 static PacManVoice g_voices[kPacManSoundCount];
 static uint32_t g_audioFailureLogs;
+static bool g_startMusicLegacyFallback;
 
 static void clear_voice(PacManVoice* voice) {
     if (!voice) return;
@@ -112,14 +114,23 @@ static const PacManVoice* find_voice(PacManSoundId id) {
 uint32_t pacman_audio_load_resources(gx_app_context* ctx) {
     for (uint32_t index = 0; index < kPacManSoundCount; ++index) clear_voice(&g_voices[index]);
     g_audioFailureLogs = 0;
+    g_startMusicLegacyFallback = false;
     synthesize_waka_b();
 
     uint32_t loaded = 0;
     PacManVoice startMusic{};
-    if (load_wav(ctx, "resources/audio/StartMusic.wav", g_startMusicPcm,
-                 kStartMusicCapacityFrames, &startMusic, true)) {
+    if (load_wav(ctx, "resources/audio/startmusicold.wav", g_startMusicPcm,
+                 kStartMusicFramesAtOldRate, &startMusic, true)) {
         set_voice(kPacManSoundStartMusic, startMusic.pcm, startMusic.pcmBytes,
                   startMusic.sampleRateHz, startMusic.bitsPerSample);
+        ++loaded;
+    } else if (load_wav(ctx, "resources/audio/StartMusic.wav", g_startMusicPcm,
+                        kStartMusicFramesAtLegacyRate, &startMusic, true)) {
+        // Keep the former cue as a recovery path only when the preferred
+        // startmusicold.wav cannot be loaded or decoded.
+        set_voice(kPacManSoundStartMusic, startMusic.pcm, startMusic.pcmBytes,
+                  startMusic.sampleRateHz, startMusic.bitsPerSample);
+        g_startMusicLegacyFallback = true;
         ++loaded;
     }
     PacManVoice eatPill{};
@@ -173,7 +184,14 @@ PacManAudioSubmitResult pacman_audio_submit(void* userData, PacManSoundId sound)
     if (!ctx || !voice || !voice->valid) return kPacManAudioSilent;
     const gx_result result = gx_play_pcm(ctx, voice->pcm, voice->pcmBytes,
         voice->sampleRateHz, voice->channels, voice->bitsPerSample);
-    if (result == GX_OK) return kPacManAudioAccepted;
+    if (result == GX_OK) {
+        if (sound == kPacManSoundStartMusic && ctx->host && ctx->host->log) {
+            ctx->host->log(ctx, g_startMusicLegacyFallback
+                ? "PacMan start cue submitted: StartMusic.wav (fallback)"
+                : "PacMan start cue submitted: startmusicold.wav");
+        }
+        return kPacManAudioAccepted;
+    }
     if (result == GX_ERROR_BUSY) return kPacManAudioBusy;
     if (g_audioFailureLogs == 0u) {
         ++g_audioFailureLogs;

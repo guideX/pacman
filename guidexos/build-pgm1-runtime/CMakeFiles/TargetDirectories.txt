@@ -1,0 +1,6 @@
+D:/dev/pacman/guidexos/build-pgm1-runtime/CMakeFiles/pacman-danger-validation.dir
+D:/dev/pacman/guidexos/build-pgm1-runtime/CMakeFiles/pacman-game-tests.dir
+D:/dev/pacman/guidexos/build-pgm1-runtime/CMakeFiles/pacman-audio-tests.dir
+D:/dev/pacman/guidexos/build-pgm1-runtime/CMakeFiles/pacman-audio-resources.dir
+D:/dev/pacman/guidexos/build-pgm1-runtime/CMakeFiles/edit_cache.dir
+D:/dev/pacman/guidexos/build-pgm1-runtime/CMakeFiles/rebuild_cache.dir

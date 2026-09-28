@@ -53,8 +53,8 @@ inline uint32_t pacman_audio_u32le(const unsigned char* p) {
 // owns the destination for the complete voice lifetime. Optional chunks and
 // odd-size chunk padding are walked according to RIFF instead of assuming a
 // 44-byte WAV header. When allowTruncate is true, the first capacityFrames
-// are copied and reported as truncated; this is used only for StartMusic,
-// whose 4.264 s source exceeds the App Model's four-second voice limit.
+// are copied and reported as truncated; the start cue exceeds the App Model's
+// four-second voice limit, so the selected cue is bounded at its sample rate.
 inline bool pacman_audio_decode_wav(const unsigned char* bytes, uint32_t size,
                                     unsigned char* outPcm, uint32_t capacityFrames,
                                     PacManWavPcm* outInfo, bool allowTruncate) {

@@ -237,6 +237,8 @@ add_custom_command(TARGET ${GUIDEXOS_NATIVE_TARGET} POST_BUILD
 
 # Stage the original parent-project WAV assets into the ordinary Native ELF
 # resources tree; Pac-Man reads them with the App Model file.read API.
+# startmusicold.wav is the normal start cue; StartMusic.wav is retained as a
+# legacy fallback if the preferred cue cannot be loaded or decoded.
 set(GUIDEXOS_AUDIO_FILES EatPill.wav StartMusic.wav startmusicold.wav ghosteat.wav killed.wav fruiteat.wav extralife.wav)
 set(GUIDEXOS_AUDIO_COPY_COMMANDS)
 set(GUIDEXOS_AUDIO_SOURCE_DEPENDS)

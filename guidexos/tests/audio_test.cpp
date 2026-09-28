@@ -22,19 +22,26 @@ struct PcmCapture {
         uint32_t rate;
         uint32_t channels;
         uint32_t bits;
+        uint32_t hash;
         unsigned char firstBytes[4];
     } requests[32];
     uint32_t count;
     gx_result result;
+    bool failStartMusicOldRead;
+    uint32_t logCount;
+    char lastLog[128];
 };
 
-static gx_result GX_CALL read_asset(gx_app_context*, const char* path, uint64_t offset,
+static gx_result GX_CALL read_asset(gx_app_context* context, const char* path, uint64_t offset,
                                     void* buffer, uint32_t capacity, uint32_t* outBytes) {
     if (!path || !buffer || !outBytes) return GX_ERROR_INVALID_ARGUMENT;
     const char* basename = path;
     for (const char* cursor = path; *cursor; ++cursor) {
         if (*cursor == '/' || *cursor == '\\') basename = cursor + 1;
     }
+    PcmCapture* capture = static_cast<PcmCapture*>(context->userData);
+    if (capture && capture->failStartMusicOldRead &&
+        strcmp(basename, "startmusicold.wav") == 0) return GX_ERROR_FAILED;
     const std::string fullPath = std::string(PACMAN_AUDIO_ASSET_ROOT) + "/" + basename;
     std::ifstream input(fullPath.c_str(), std::ios::binary);
     if (!input) return GX_ERROR_FAILED;
@@ -56,11 +63,53 @@ static gx_result GX_CALL capture_pcm(gx_app_context* context, const void* pcm,
         request.rate = rate;
         request.channels = channels;
         request.bits = bits;
+        uint32_t hash = 2166136261u;
+        const unsigned char* samples = static_cast<const unsigned char*>(pcm);
+        for (uint32_t index = 0; index < bytes; ++index) {
+            hash = (hash ^ samples[index]) * 16777619u;
+        }
+        request.hash = hash;
         const uint32_t copyBytes = bytes < sizeof(request.firstBytes) ? bytes : sizeof(request.firstBytes);
         memcpy(request.firstBytes, pcm, copyBytes);
     }
     ++capture->count;
     return capture->result;
+}
+
+static gx_result GX_CALL record_app_log(gx_app_context* context, const char* message) {
+    PcmCapture* capture = context ? static_cast<PcmCapture*>(context->userData) : 0;
+    if (!capture || !message) return GX_ERROR_INVALID_ARGUMENT;
+    ++capture->logCount;
+    uint32_t index = 0;
+    while (index + 1u < sizeof(capture->lastLog) && message[index]) {
+        capture->lastLog[index] = message[index];
+        ++index;
+    }
+    capture->lastLog[index] = '\0';
+    return GX_OK;
+}
+
+static uint32_t hash_pcm(const unsigned char* samples, uint32_t bytes) {
+    uint32_t hash = 2166136261u;
+    for (uint32_t index = 0; index < bytes; ++index) {
+        hash = (hash ^ samples[index]) * 16777619u;
+    }
+    return hash;
+}
+
+static uint32_t asset_pcm_hash(const char* name, uint32_t capacityFrames,
+                               uint32_t* outBytes, uint32_t* outRate) {
+    const std::string path = std::string(PACMAN_AUDIO_ASSET_ROOT) + "/" + name;
+    std::ifstream input(path.c_str(), std::ios::binary);
+    std::vector<unsigned char> wav((std::istreambuf_iterator<char>(input)),
+                                   std::istreambuf_iterator<char>());
+    std::vector<unsigned char> pcm(capacityFrames * 2u);
+    PacManWavPcm info{};
+    if (wav.empty() || !pacman_audio_decode_wav(wav.data(), static_cast<uint32_t>(wav.size()),
+            pcm.data(), capacityFrames, &info, true)) return 0u;
+    if (outBytes) *outBytes = info.frameCount * (info.bitsPerSample / 8u);
+    if (outRate) *outRate = info.sampleRateHz;
+    return hash_pcm(pcm.data(), info.frameCount * (info.bitsPerSample / 8u));
 }
 
 static PacManAudioSubmitResult record_sound(void* userData, PacManSoundId sound) {
@@ -201,6 +250,7 @@ static bool test_runtime_resource_load_and_play_pcm() {
     host.size = sizeof(host);
     host.file_read = read_asset;
     host.play_pcm = capture_pcm;
+    host.log = record_app_log;
     gx_app_context context{};
     context.size = sizeof(context);
     context.host = &host;
@@ -211,10 +261,18 @@ static bool test_runtime_resource_load_and_play_pcm() {
     PacManAudioState audio{};
     pacman_audio_initialize(&audio);
     pacman_audio_start_session(&audio, pacman_audio_submit, &context);
-    ok &= expect(capture.count == 1u && capture.requests[0].bytes == 64000u &&
-        capture.requests[0].rate == 16000u && capture.requests[0].channels == 1u &&
-        capture.requests[0].bits == 8u && memcmp(capture.requests[0].firstBytes, "RIFF", 4u) != 0,
-        "start music submits bounded raw PCM8, not the WAV container");
+    uint32_t preferredBytes = 0u;
+    uint32_t preferredRate = 0u;
+    const uint32_t preferredHash = asset_pcm_hash("startmusicold.wav", 44100u,
+                                                   &preferredBytes, &preferredRate);
+    ok &= expect(capture.count == 1u && capture.requests[0].bytes == 44100u &&
+        capture.requests[0].bytes == preferredBytes && capture.requests[0].hash == preferredHash &&
+        capture.requests[0].rate == 11025u && capture.requests[0].rate == preferredRate &&
+        capture.requests[0].channels == 1u &&
+        capture.requests[0].bits == 8u && memcmp(capture.requests[0].firstBytes, "RIFF", 4u) != 0 &&
+        capture.logCount == 1u &&
+        strcmp(capture.lastLog, "PacMan start cue submitted: startmusicold.wav") == 0,
+        "start music submits startmusicold.wav raw PCM8 capped at four seconds, not the WAV container");
 
     GameState game{};
     game.normalPillConsumed = true;
@@ -263,6 +321,40 @@ static bool test_runtime_resource_load_and_play_pcm() {
     pacman_audio_process_game_events(&failedAudio, &game, pacman_audio_submit, &context);
     ok &= expect(failedAudio.disabled && capture.count == beforeFailure + 1u,
         "runtime play_pcm failure is logged once and later requests are not retried");
+    return ok;
+}
+
+static bool test_runtime_start_music_legacy_fallback() {
+    bool ok = true;
+    PcmCapture capture{};
+    capture.result = GX_OK;
+    capture.failStartMusicOldRead = true;
+    gx_host_calls host{};
+    host.size = sizeof(host);
+    host.file_read = read_asset;
+    host.play_pcm = capture_pcm;
+    host.log = record_app_log;
+    gx_app_context context{};
+    context.size = sizeof(context);
+    context.host = &host;
+    context.userData = &capture;
+
+    const uint32_t loaded = pacman_audio_load_resources(&context);
+    PacManAudioState audio{};
+    pacman_audio_initialize(&audio);
+    pacman_audio_start_session(&audio, pacman_audio_submit, &context);
+
+    uint32_t legacyBytes = 0u;
+    uint32_t legacyRate = 0u;
+    const uint32_t legacyHash = asset_pcm_hash("StartMusic.wav", 64000u,
+                                                &legacyBytes, &legacyRate);
+    ok &= expect(loaded == 6u && capture.count == 1u &&
+        capture.requests[0].bytes == 64000u && capture.requests[0].bytes == legacyBytes &&
+        capture.requests[0].rate == 16000u && capture.requests[0].rate == legacyRate &&
+        capture.requests[0].bits == 8u && capture.requests[0].hash == legacyHash &&
+        capture.logCount == 1u && strcmp(capture.lastLog,
+            "PacMan start cue submitted: StartMusic.wav (fallback)") == 0,
+        "StartMusic.wav is submitted only when startmusicold.wav cannot be read");
     return ok;
 }
 
@@ -370,6 +462,7 @@ int main() {
     ok &= test_wav_parser();
     ok &= test_supplied_wav_assets();
     ok &= test_runtime_resource_load_and_play_pcm();
+    ok &= test_runtime_start_music_legacy_fallback();
     ok &= test_event_mapping_and_alternation();
     ok &= test_failure_is_silent_and_bounded();
     if (!ok) return 1;
