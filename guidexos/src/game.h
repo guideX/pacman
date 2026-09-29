@@ -14,6 +14,7 @@ static const uint32_t kPacManPowerPillScore = 10u;
 static const uint32_t kPacManGhostEatScore[4] = {200u, 400u, 800u, 1600u};
 static const uint32_t kPacManFruitTriggerTime = 4000u;
 static const uint32_t kPacManFruitExpirationTime = 5000u;
+static const uint32_t kPacManFruitScorePopupDurationSteps = 100u;
 // The VB6 form's only presentation timer is 500 ms.  Historical source does
 // not blink power pills, so this fixed cadence is the smallest deterministic
 // approximation for the requested native polish.

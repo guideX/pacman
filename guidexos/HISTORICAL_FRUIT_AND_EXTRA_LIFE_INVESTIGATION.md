@@ -70,8 +70,9 @@ ghost chain, and scores once because the source clears `FruitHere` before
 calling `AddScore`. Native preserves this strict-X/exact-Y quirk and makes the
 fruit phase non-collidable before centralized scoring.
 
-There is no fruit score popup in the source. Native therefore does not add a
-familiar but unsupported popup phase to gameplay.
+There is no fruit score popup in the source. PGM3 adds a brief native-only
+display of the exact awarded fruit value as presentation polish; it does not
+change the source-backed score, collision, timer, or death behavior.
 
 ## Death, level, and update behavior
 

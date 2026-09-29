@@ -17,7 +17,7 @@ set(GUIDEXOS_PACKAGE_ROOT "D:/Apps" CACHE PATH "guideXOS package root scanned by
 set(GUIDEXOS_SDK_ROOT "${GUIDEXOS_SERVER_ROOT}/sdk")
 set(GUIDEXOS_APP_ROOT "${CMAKE_CURRENT_LIST_DIR}")
 set(GUIDEXOS_AUDIO_SOURCE_ROOT "${GUIDEXOS_APP_ROOT}/..")
-set(GUIDEXOS_LOCAL_BIN_DIR "${GUIDEXOS_APP_ROOT}/bin/${GUIDEXOS_APP_ARCH}")
+set(GUIDEXOS_LOCAL_BIN_DIR "${GUIDEXOS_APP_ROOT}/bin/${GUIDEXOS_APP_ARCH}" CACHE PATH "Local Native ELF output directory")
 
 set(GUIDEXOS_CLANG "C:/Program Files/LLVM/bin/clang++.exe" CACHE FILEPATH "LLVM clang++ used for the freestanding ELF objects")
 set(GUIDEXOS_LLD "C:/Program Files/LLVM/bin/ld.lld.exe" CACHE FILEPATH "LLVM lld used for the freestanding ELF link")

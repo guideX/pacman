@@ -393,23 +393,43 @@ static bool test_event_mapping_and_alternation() {
         recorder.sounds[7] == kPacManSoundExtraLife,
         "power pill, ghost, fruit, and each extra-life event are mapped");
 
+    GameState fruitGame{};
+    game_initialize(&fruitGame);
+    fruitGame.pacman.x = kPacManFruitCenterX;
+    fruitGame.pacman.y = kPacManFruitCenterY;
+    fruitGame.fruit.phase = FruitPhase::Visible;
+    fruitGame.fruit.appearancesTriggered = 1u;
+    fruitGame.fruit.scoreValue = 500u;
+    fruitGame.fruit.x = kPacManFruitCenterX;
+    fruitGame.fruit.y = kPacManFruitCenterY;
+    fruitGame.suppressGhostCollisionsForValidation = true;
+    const uint32_t fruitSoundStart = recorder.count;
+    game_update(&fruitGame);
+    pacman_audio_process_game_events(&audio, &fruitGame, record_sound, &recorder);
+    game_update(&fruitGame);
+    pacman_audio_process_game_events(&audio, &fruitGame, record_sound, &recorder);
+    ok &= expect(fruitGame.score == 500u && fruitGame.fruit.phase == FruitPhase::ScorePopup &&
+        !fruitGame.fruitConsumed && recorder.count == fruitSoundStart + 1u &&
+        recorder.sounds[fruitSoundStart] == kPacManSoundFruitEaten,
+        "real fruit collection emits the fruiteat event once across continued overlap");
+
     memset(&game, 0, sizeof(game));
     game.normalPillConsumed = true;
     game.deathEntered = true;
     pacman_audio_process_game_events(&audio, &game, record_sound, &recorder);
-    ok &= expect(recorder.sounds[8] == kPacManSoundKilled && recorder.count == 9u,
+    ok &= expect(recorder.sounds[9] == kPacManSoundKilled && recorder.count == 10u,
         "death cue suppresses a same-tick pellet sound");
 
     pacman_audio_reset_waka(&audio);
     memset(&game, 0, sizeof(game));
     game.normalPillConsumed = true;
     pacman_audio_process_game_events(&audio, &game, record_sound, &recorder);
-    ok &= expect(recorder.sounds[9] == kPacManSoundWakaA,
+    ok &= expect(recorder.sounds[10] == kPacManSoundWakaA,
         "level reset returns waka alternation to A");
 
     pacman_audio_reset_for_new_session(&audio);
     pacman_audio_start_session(&audio, record_sound, &recorder);
-    ok &= expect(recorder.sounds[10] == kPacManSoundStartMusic && recorder.count == 11u,
+    ok &= expect(recorder.sounds[11] == kPacManSoundStartMusic && recorder.count == 12u,
         "new session resets one-shot start-music state");
 
     PacManAudioState eatenAudio{};

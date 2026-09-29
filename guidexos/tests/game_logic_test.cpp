@@ -2513,6 +2513,15 @@ bool test_fruit_and_extra_life() {
     ok &= expect(beyond.type == levelEight.type && beyond.score == levelEight.score &&
                  beyond.sprite.x == levelEight.sprite.x && beyond.mask.x == levelEight.mask.x,
                  "fruit mapping safely saturates above Level 8");
+    for (uint32_t level = 1u; level <= 8u; ++level) {
+        const FruitRules mapping = calculate_fruit_rules(level);
+        const int expectedX = static_cast<int>((level - 1u) % 4u) * 32;
+        const int expectedY = static_cast<int>((level - 1u) / 4u) * 32 + 256;
+        ok &= expect(mapping.type == level - 1u && mapping.score == level * 500u &&
+                     mapping.sprite.x == expectedX && mapping.sprite.y == expectedY &&
+                     mapping.mask.x == expectedX + 128 && mapping.mask.y == expectedY,
+                     "each historical level selects its fruit value, sprite cell, and mask");
+    }
     ok &= expect(levelOne.x == 232 && levelOne.y == 280 &&
                  levelOne.triggerTimeSteps == 4000u &&
                  levelOne.expirationTimeSteps == 5000u &&
@@ -2547,6 +2556,18 @@ bool test_fruit_and_extra_life() {
     game_update(&game);
     ok &= expect(game.fruit.timeCountSteps == 5000u && !game.fruitExpired,
                  "expired fruit timer cannot underflow or repeat the expiration event");
+    game.pacman.x = kPacManFruitCenterX;
+    game.pacman.y = kPacManFruitCenterY;
+    game_update(&game);
+    ok &= expect(!game.fruitConsumed && game.fruit.phase == FruitPhase::Inactive && game.score == 0u,
+                 "expired fruit cannot be collected by a later overlap");
+
+    prepare_fruit_test_game(&game);
+    game.pacman.x = kPacManFruitCenterX;
+    game.pacman.y = kPacManFruitCenterY;
+    game_update(&game);
+    ok &= expect(!game.fruitConsumed && game.fruit.phase == FruitPhase::Inactive && game.score == 0u,
+                 "fruit cannot be collected before its level trigger has spawned it");
 
     FruitState collisionFruit = game.fruit;
     collisionFruit.phase = FruitPhase::Visible;
@@ -2571,11 +2592,23 @@ bool test_fruit_and_extra_life() {
     game.score = 0u;
     game_update(&game);
     ok &= expect(game.fruitConsumed && game.fruitScoreAwarded &&
-                 game.fruit.phase == FruitPhase::Inactive && game.score == 500u,
-                 "fruit collision awards its score once through centralized scoring");
+                 game.fruit.phase == FruitPhase::ScorePopup &&
+                 game.fruit.scoreValue == 500u &&
+                 game.fruit.popupStepsRemaining == kPacManFruitScorePopupDurationSteps &&
+                 game.score == 500u,
+                 "fruit collision awards its score once and opens exact-value feedback");
     game_update(&game);
-    ok &= expect(!game.fruitConsumed && game.score == 500u,
-                 "continued overlap cannot rescore a collected fruit");
+    ok &= expect(!game.fruitConsumed && game.fruit.phase == FruitPhase::ScorePopup &&
+                 game.fruit.popupStepsRemaining == kPacManFruitScorePopupDurationSteps - 1u &&
+                 game.score == 500u,
+                 "continued overlap cannot rescore fruit and popup time advances once per game step");
+    for (uint32_t step = 0; step < kPacManFruitScorePopupDurationSteps - 2u; ++step) game_update(&game);
+    ok &= expect(game.fruit.phase == FruitPhase::ScorePopup && game.fruit.popupStepsRemaining == 1u,
+                 "fruit score popup remains visible through its final simulation step");
+    game_update(&game);
+    ok &= expect(game.fruit.phase == FruitPhase::Inactive && game.fruit.popupStepsRemaining == 0u &&
+                 game.score == 500u,
+                 "fruit score popup expires at exactly 100 gameplay steps without changing score");
 
     prepare_fruit_test_game(&game);
     game.fruit.phase = FruitPhase::Visible;
@@ -2613,10 +2646,31 @@ bool test_fruit_and_extra_life() {
     game_update(&game);
     ok &= expect(game.fruit.timeCountSteps == 101u,
                  "ordinary death pauses the fruit timer after the collision step");
+
+    prepare_fruit_test_game(&game);
+    game.fruit.phase = FruitPhase::ScorePopup;
+    game.fruit.appearancesTriggered = 1u;
+    game.fruit.popupStepsRemaining = 40u;
+    game.pacman.x = 64;
+    game.pacman.y = 280;
+    game.ghosts[0].x = 64;
+    game.ghosts[0].y = 280;
+    game.ghosts[0].collisionActive = true;
+    game.suppressGhostCollisionsForValidation = false;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::Dying && game.fruit.phase == FruitPhase::Inactive &&
+                 game.fruit.popupStepsRemaining == 0u && game.fruit.appearancesTriggered == 1u,
+                 "death clears transient fruit score feedback without reopening the spawn opportunity");
+
+    game.fruit.phase = FruitPhase::ScorePopup;
+    game.fruit.popupStepsRemaining = 60u;
+    game.fruit.timeCountSteps = 1200u;
     game_reset_level(&game);
     ok &= expect(game.fruit.phase == FruitPhase::Inactive &&
-                 game.fruit.appearancesTriggered == 0u && game.fruit.fruitType == 1u,
-                 "level transition clears fruit trigger state and selects Level 2");
+                 game.fruit.appearancesTriggered == 0u && game.fruit.fruitType == 1u &&
+                 game.fruit.scoreValue == 1000u && game.fruit.timeCountSteps == 0u &&
+                 game.fruit.popupStepsRemaining == 0u,
+                 "level transition clears fruit timers/feedback and selects Level 2");
 
     game.score = 9999u;
     game.lives = kPacManInitialLives;
@@ -2656,17 +2710,27 @@ bool test_fruit_and_extra_life() {
     game_update(&game);
     ok &= expect(game.lives == 4u && game.lifeAward.awardsGranted == 0u,
                  "death does not clear or duplicate extra-life state");
-    game.playState = PlayState::GameOver;
+    game.playState = PlayState::Dying;
+    game.lives = 0u;
+    game.deathStepsRemaining = 1u;
     game.fruit.phase = FruitPhase::Visible;
-    ok &= expect(!pacman_collides_with_fruit(game.pacman, game.fruit) ||
-                 game.pacman.y != game.fruit.y,
-                 "Game Over fruit state is non-collidable through the update gate");
+    game.fruit.appearancesTriggered = 1u;
+    game.fruit.timeCountSteps = 4567u;
+    game.fruit.visibleStepsRemaining = 433u;
+    game.fruit.popupStepsRemaining = 0u;
+    game_update(&game);
+    ok &= expect(game.playState == PlayState::GameOver && game.fruit.phase == FruitPhase::Inactive &&
+                 game.fruit.appearancesTriggered == 0u && game.fruit.timeCountSteps == 0u &&
+                 game.fruit.visibleStepsRemaining == 0u && game.fruit.popupStepsRemaining == 0u &&
+                 game.fruitReset,
+                 "Game Over clears active fruit, lifetime, and per-level spawn state");
     ok &= expect(game_restart_session(&game) && game.score == 0u &&
                  game.lives == kPacManInitialLives && game.levelNumber == 1u &&
                  game.lifeAward.awardsGranted == 0u &&
                  game.lifeAward.thresholdsAwardedMask == 0u &&
                  game.fruit.phase == FruitPhase::Inactive &&
-                 game.fruit.appearancesTriggered == 0u,
+                 game.fruit.appearancesTriggered == 0u && game.fruit.timeCountSteps == 0u &&
+                 game.fruit.popupStepsRemaining == 0u,
                  "new game restart clears fruit and extra-life state");
     return ok;
 }

@@ -184,6 +184,14 @@ static void draw_number_right(uint32_t* frame, int right, int y, uint32_t value,
     draw_number(frame, right - number_digit_count(value) * 6 * scale, y, value, color, scale);
 }
 
+static void draw_fruit_score_popup(uint32_t* frame, const GameState& game) {
+    if (game.fruit.phase != FruitPhase::ScorePopup || game.fruit.popupStepsRemaining == 0u ||
+        game.playState == PlayState::GameOver) return;
+    const int width = number_digit_count(game.fruit.scoreValue) * 6;
+    draw_number(frame, game.fruit.x - width / 2, 32 + game.fruit.y - 24,
+                game.fruit.scoreValue, 0x00FFFF00u, 1);
+}
+
 static void draw_status(uint32_t* frame, const GameState& game) {
     const uint32_t color = 0x00FFFFFFu;
     draw_text(frame, 4, 2, "SCORE", color, 1);
@@ -348,6 +356,7 @@ bool render_game_scene(const PacImage* sprites, const GameState* game, const uin
                     sourceX, sourceY, sourceX + 128);
     }
     draw_ghosts(sprites, framePixels, *game);
+    draw_fruit_score_popup(framePixels, *game);
     if (game->playState == PlayState::Dying) {
         const int deathFrame = static_cast<int>(game->deathAnimationFrame / 4u) % 3;
         const int deathSourceY = 128 + (deathFrame + 1) * kPacManSpriteSize;

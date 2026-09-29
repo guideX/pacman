@@ -253,6 +253,10 @@ static void log_validation_frame(gx_app_context* ctx, gx_handle window, const Ga
     append_frame_signed_number(message, &index, sizeof(message), game.fruit.y);
     append_frame_text(message, &index, sizeof(message), " fruitTimer=");
     append_frame_number(message, &index, sizeof(message), game.fruit.visibleStepsRemaining);
+    append_frame_text(message, &index, sizeof(message), " fruitScoreValue=");
+    append_frame_number(message, &index, sizeof(message), game.fruit.scoreValue);
+    append_frame_text(message, &index, sizeof(message), " fruitPopupTimer=");
+    append_frame_number(message, &index, sizeof(message), game.fruit.popupStepsRemaining);
     append_frame_text(message, &index, sizeof(message), " fruitTimeCount=");
     append_frame_number(message, &index, sizeof(message), game.fruit.timeCountSteps);
     append_frame_text(message, &index, sizeof(message), " fruitAppearance=");
@@ -474,9 +478,10 @@ static void log_game_events(gx_app_context* ctx, GameState& game) {
 #if PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
 struct FruitValidationTrace {
     uint8_t stage;
+    uint32_t visibleHoldSteps;
 };
 
-static FruitValidationTrace g_fruitValidationTrace = {0};
+static FruitValidationTrace g_fruitValidationTrace = {0, 0};
 
 static void fruit_validation_log(gx_app_context* ctx, const char* text) {
     if (ctx && ctx->host && ctx->host->log && text) ctx->host->log(ctx, text);
@@ -570,13 +575,21 @@ static void fruit_validation_observe(gx_app_context* ctx, GameState* game) {
         g_fruitValidationTrace.stage = 2u;
         fruit_validation_log(ctx, "FRUITVAL SPAWN_OBSERVED");
     } else if (g_fruitValidationTrace.stage == 2u && game->fruit.phase == FruitPhase::Visible) {
-        game->pacman.x = kPacManFruitCenterX;
-        game->pacman.y = kPacManFruitCenterY;
-        game->pacman.direction = Direction::None;
-        game->pacman.requestedDirection = Direction::None;
-        g_fruitValidationTrace.stage = 12u;
+        // Hold a source-driven visible fruit long enough for a hosted frame capture.
+        if (++g_fruitValidationTrace.visibleHoldSteps >= 50u) {
+            game->pacman.x = kPacManFruitCenterX;
+            game->pacman.y = kPacManFruitCenterY;
+            game->pacman.direction = Direction::None;
+            game->pacman.requestedDirection = Direction::None;
+            g_fruitValidationTrace.stage = 12u;
+        }
     } else if (g_fruitValidationTrace.stage == 12u && game->fruitConsumed) {
         fruit_validation_log(ctx, "FRUITVAL COLLECTION_OBSERVED");
+        if (game->fruit.phase == FruitPhase::ScorePopup &&
+            game->fruit.scoreValue == game->fruitScoreAwardedValue &&
+            game->fruit.popupStepsRemaining == kPacManFruitScorePopupDurationSteps) {
+            fruit_validation_log(ctx, "FRUITVAL SCORE_POPUP_OBSERVED");
+        }
         if (game->extraLifeAwarded && game->score == 10000u && game->lives == 4u &&
             game->lifeAward.awardsGranted == 1u) {
             fruit_validation_log(ctx, "FRUITVAL EXTRA_LIFE_OBSERVED");
@@ -589,9 +602,13 @@ static void fruit_validation_observe(gx_app_context* ctx, GameState* game) {
         } else {
             fruit_validation_log(ctx, "FRUITVAL EXTRA_LIFE_STATE_FAIL");
         }
-        // Select Level 4 through the normal level-reset function.  The direct
-        // level value is validation preparation only; no fruit or life award
-        // is assigned by the harness.
+        g_fruitValidationTrace.stage = 13u;
+    } else if (g_fruitValidationTrace.stage == 13u &&
+               game->fruit.phase == FruitPhase::Inactive &&
+               game->fruit.appearancesTriggered == 1u) {
+        fruit_validation_log(ctx, "FRUITVAL SCORE_POPUP_EXPIRED");
+        // Select Level 4 after the popup expires through the normal level-reset
+        // function. This assignment is validation preparation only.
         game->levelNumber = 3u;
         game_reset_level(game);
         g_fruitValidationTrace.stage = 3u;

@@ -39,14 +39,14 @@ public static class PacManFruitCapture {
 '@
 
 $pacmanRoot = Split-Path -Parent $PSScriptRoot
-$serverRoot = 'D:\dev\guideXOSServer'
+$serverRoot = if ($env:PACMAN_GUIDEXOS_SERVER_ROOT) { $env:PACMAN_GUIDEXOS_SERVER_ROOT } else { 'D:\dev\guideXOSServer' }
 $serverRootFull = [IO.Path]::GetFullPath($serverRoot).TrimEnd('\')
 $serverExe = [IO.Path]::GetFullPath((Join-Path $serverRoot 'guideXOSServer.experimental.exe'))
 $normalServerExe = [IO.Path]::GetFullPath((Join-Path $serverRoot 'guideXOSServer.exe'))
 $runId = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $rawLog = Join-Path $serverRoot "hosted-pacman-fruit-$runId-raw.log"
 $summaryPath = Join-Path $serverRoot "hosted-pacman-fruit-$runId-validation.txt"
-$captureDirectory = Join-Path $pacmanRoot 'captures'
+$captureDirectory = if ($env:PACMAN_FRUIT_CAPTURE_DIRECTORY) { $env:PACMAN_FRUIT_CAPTURE_DIRECTORY } else { Join-Path $pacmanRoot 'captures' }
 $results = [System.Collections.Generic.List[string]]::new()
 $ownedPids = [System.Collections.Generic.List[int]]::new()
 $process = $null
@@ -98,7 +98,7 @@ function Send-ServerCommand([string]$command) {
     $process.StandardInput.WriteLine($command); $process.StandardInput.Flush()
 }
 function Get-Frames {
-    $pattern = 'PacMan frame seq=(?<seq>\d+) window=(?<window>\d+) state=(?<state>\w+).*?score=(?<score>\d+).*?lives=(?<lives>\d+).*?level=(?<level>\d+).*?remaining=(?<remaining>\d+).*?fruitPhase=(?<fruitPhase>\w+).*?fruitType=(?<fruitType>\d+).*?fruitX=(?<fruitX>-?\d+).*?fruitY=(?<fruitY>-?\d+).*?fruitTimer=(?<fruitTimer>\d+).*?fruitTimeCount=(?<fruitTimeCount>\d+).*?fruitAppearance=(?<fruitAppearance>\d+).*?lifeAwardMask=(?<lifeAwardMask>\d+).*?lifeAwards=(?<lifeAwards>\d+)'
+    $pattern = 'PacMan frame seq=(?<seq>\d+) window=(?<window>\d+) state=(?<state>\w+).*?score=(?<score>\d+).*?lives=(?<lives>\d+).*?level=(?<level>\d+).*?remaining=(?<remaining>\d+).*?fruitPhase=(?<fruitPhase>[\w-]+).*?fruitType=(?<fruitType>\d+).*?fruitX=(?<fruitX>-?\d+).*?fruitY=(?<fruitY>-?\d+).*?fruitTimer=(?<fruitTimer>\d+).*?fruitScoreValue=(?<fruitScoreValue>\d+).*?fruitPopupTimer=(?<fruitPopupTimer>\d+).*?fruitTimeCount=(?<fruitTimeCount>\d+).*?fruitAppearance=(?<fruitAppearance>\d+).*?lifeAwardMask=(?<lifeAwardMask>\d+).*?lifeAwards=(?<lifeAwards>\d+)'
     $frames = [System.Collections.Generic.List[object]]::new()
     foreach ($match in [regex]::Matches((Read-RawLog), $pattern)) {
         [void]$frames.Add([pscustomobject]@{
@@ -108,6 +108,8 @@ function Get-Frames {
             Remaining = [uint32]$match.Groups['remaining'].Value; FruitPhase = $match.Groups['fruitPhase'].Value
             FruitType = [uint32]$match.Groups['fruitType'].Value; FruitX = [int]$match.Groups['fruitX'].Value
             FruitY = [int]$match.Groups['fruitY'].Value; FruitTimer = [uint32]$match.Groups['fruitTimer'].Value
+            FruitScoreValue = [uint32]$match.Groups['fruitScoreValue'].Value
+            FruitPopupTimer = [uint32]$match.Groups['fruitPopupTimer'].Value
             FruitTimeCount = [uint32]$match.Groups['fruitTimeCount'].Value
             FruitAppearance = [uint32]$match.Groups['fruitAppearance'].Value
             LifeAwardMask = [uint32]$match.Groups['lifeAwardMask'].Value
@@ -146,48 +148,55 @@ function Sync-Capture([pscustomobject]$frame, [string]$label) {
     try { if (-not [PacManFruitCapture]::Capture($path, $compositor)) { throw "Capture failed for $label." } }
     finally { Send-ServerCommand "gui.unfreeze $($frame.WindowId)" }
     $results.Add("capture=$path")
-    $results.Add("capture-target runtimeId=$runtimeId windowId=$($frame.WindowId) applicationSequence=$($frame.Sequence) frameSequence=$($sync.Sequence) frameGeneration=$($sync.FrameGeneration) paintGeneration=$($sync.PaintGeneration) captureGeneration=$($sync.CaptureGeneration) level=$($frame.Level) score=$($frame.Score) lives=$($frame.Lives) fruitPhase=$($frame.FruitPhase) fruitType=$($frame.FruitType) fruitX=$($frame.FruitX) fruitY=$($frame.FruitY) fruitTimer=$($frame.FruitTimer) fruitAppearance=$($frame.FruitAppearance)")
+    $results.Add("capture-target runtimeId=$runtimeId windowId=$($frame.WindowId) applicationSequence=$($frame.Sequence) frameSequence=$($sync.Sequence) frameGeneration=$($sync.FrameGeneration) paintGeneration=$($sync.PaintGeneration) captureGeneration=$($sync.CaptureGeneration) level=$($frame.Level) score=$($frame.Score) lives=$($frame.Lives) fruitPhase=$($frame.FruitPhase) fruitType=$($frame.FruitType) fruitScore=$($frame.FruitScoreValue) fruitPopupTimer=$($frame.FruitPopupTimer) fruitX=$($frame.FruitX) fruitY=$($frame.FruitY) fruitTimer=$($frame.FruitTimer) fruitAppearance=$($frame.FruitAppearance)")
     return $frame
 }
 function Escape-And-Wait {
-    [PacManFruitCapture]::Key($compositor, 39, $true); Start-Sleep -Milliseconds 80
-    [PacManFruitCapture]::Key($compositor, 39, $false); [PacManFruitCapture]::Key($compositor, 27, $true); [PacManFruitCapture]::Key($compositor, 27, $false)
-    if (-not (Wait-ForLog 'Cleanup complete app=com.guidexos.pacman.fruit-validation.*remainingWindows=0' 5000)) { throw 'Fruit validation window did not clean up.' }
+    Send-ServerCommand 'gui.close 1000'
+    if (-not (Wait-ForLog 'NativeAppRuntime.*Cleanup complete.*remainingWindows=0' 10000)) { throw 'Fruit validation window did not clean up.' }
 }
 
 try {
     if (@(Get-ServerProcesses).Count -gt 0) { throw 'A guideXOS Server process is already running; refusing to overlap it.' }
-    if ([PacManFruitCapture]::FindWindow('GXOS_COMPOSITOR', 'guideXOSCpp Compositor') -ne [IntPtr]::Zero) { throw 'Another compositor owns the compositor window.' }
+    if ([PacManFruitCapture]::FindWindow('GXOS_COMPOSITOR', $null) -ne [IntPtr]::Zero) { throw 'Another compositor owns the compositor window.' }
     New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
     $psi = [ProcessStartInfo]::new(); $psi.FileName = $env:ComSpec
     $psi.Arguments = "/d /c `".\guideXOSServer.experimental.exe > $(Split-Path -Leaf $rawLog) 2>&1`""
-    $psi.WorkingDirectory = $serverRoot; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = $serverRoot; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $false
     $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
     $env:GXOS_PACMAN_FRAME_DIAGNOSTICS = '1'; $env:GXOS_COMPOSITOR_FREEZE_DIAGNOSTICS = '1'
     $process = [Process]::new(); $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'Failed to start the owned experimental server wrapper.' }
     [void]$ownedPids.Add($process.Id); $results.Add("run=$runId"); $results.Add("server-wrapper-pid=$($process.Id)")
     for ($i = 0; $i -lt 100; ++$i) { Add-OwnedDescendants; if (@(Get-ServerProcesses | Where-Object { $_.ParentProcessId -eq $process.Id -and $_.ExecutablePath -ieq $serverExe }).Count -gt 0) { break }; if ($i -eq 99) { throw "Experimental server child did not start; inspect $rawLog" }; Start-Sleep -Milliseconds 100 }
+    if (-not (Wait-ForLog 'Commands:' 10000)) { throw 'Experimental server command loop did not become ready.' }
+    # The first redirected command line is consumed during console startup.
+    Send-ServerCommand ''
+    if (-not (Wait-ForLog 'Unknown command \(help for list\)' 5000)) { throw 'Experimental server command input did not become ready.' }
     Send-ServerCommand 'gui.start'
-    for ($i = 0; $i -lt 50; ++$i) { $compositor = [PacManFruitCapture]::FindWindow('GXOS_COMPOSITOR', 'guideXOSCpp Compositor'); if ($compositor -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 200 }
+    for ($i = 0; $i -lt 50; ++$i) { $compositor = [PacManFruitCapture]::FindWindow('GXOS_COMPOSITOR', $null); if ($compositor -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 200 }
     if ($compositor -eq [IntPtr]::Zero) { throw 'Hosted compositor was not created.' }
     $results.Add("compositor-window=$compositor"); Send-ServerCommand 'desktop.launch Nexgen PacMan Fruit Validation'
     if (-not (Wait-ForLog 'FRUITVAL PREPARE_SPAWN' 20000)) { throw 'Fruit validation ELF did not launch or prepare.' }
     $initial = Wait-ForFrame 0 { param($f) $f.Level -eq 1 -and $f.FruitPhase -eq 'inactive' } 12000
     if ($null -eq $initial) { throw 'Initial inactive fruit frame was not observed.' }
     [void](Sync-Capture $initial 'before-trigger')
-    $spawn = Wait-ForFrame $initial.Sequence { param($f) $f.Level -eq 1 -and $f.FruitPhase -eq 'visible' -and $f.FruitType -eq 0 -and $f.FruitX -eq 232 -and $f.FruitY -eq 280 } 15000
-    if ($null -eq $spawn) { throw 'Level 1 fruit spawn frame was not observed.' }
+    $spawn = Wait-ForFrame $initial.Sequence { param($f) $f.Level -eq 1 -and $f.FruitPhase -eq 'visible' -and $f.FruitType -eq 0 -and $f.FruitScoreValue -eq 500 -and $f.FruitX -eq 232 -and $f.FruitY -eq 280 } 15000
+    if ($null -eq $spawn) { throw 'Level 1 visible fruit frame was not observed.' }
+    if (-not (Wait-ForLog 'FRUITVAL SPAWN_OBSERVED' 10000)) { throw 'Fruit spawn milestone was not observed.' }
     [void](Sync-Capture $spawn 'level1-fruit-visible')
-    if (-not (Wait-ForLog 'fruit trigger reached' 10000)) { throw 'Fruit trigger log was not observed.' }
     $results.Add('fruit-trigger=pass')
-    $collected = Wait-ForFrame $spawn.Sequence { param($f) $f.Level -eq 4 -and $f.FruitPhase -eq 'inactive' -and $f.Score -eq 10000 -and $f.Lives -eq 4 -and $f.LifeAwards -eq 1 } 12000
-    if ($null -eq $collected) { throw 'Fruit collection/extra-life frame was not observed.' }
-    [void](Sync-Capture $collected 'fruit-collected-extra-life')
+    $popup = Wait-ForFrame $spawn.Sequence { param($f) $f.Level -eq 1 -and $f.FruitPhase -eq 'score-popup' -and $f.FruitScoreValue -eq 500 -and $f.FruitPopupTimer -gt 0 -and $f.Score -eq 10000 -and $f.Lives -eq 4 -and $f.LifeAwards -eq 1 } 12000
+    if ($null -eq $popup) { throw 'Fruit collection/score-popup/extra-life frame was not observed.' }
+    [void](Sync-Capture $popup 'fruit-collected-score-popup')
+    if (-not (Wait-ForLog 'FRUITVAL SCORE_POPUP_OBSERVED' 10000)) { throw 'Fruit score popup milestone was not observed.' }
+    if (-not (Wait-ForLog 'FRUITVAL SCORE_POPUP_EXPIRED' 10000)) { throw 'Fruit score popup expiration was not observed.' }
     if (-not (Wait-ForLog 'FRUITVAL EXTRA_LIFE_OBSERVED' 10000)) { throw 'Extra-life milestone was not observed.' }
     $results.Add('fruit-collection=pass')
+    $results.Add('fruit-score-popup=pass')
+    $results.Add('fruit-popup-expiration=pass')
     $results.Add('extra-life=pass')
-    $level4 = Wait-ForFrame $collected.Sequence { param($f) $f.Level -eq 4 -and $f.FruitPhase -eq 'visible' -and $f.FruitType -eq 3 } 30000
+    $level4 = Wait-ForFrame $popup.Sequence { param($f) $f.Level -eq 4 -and $f.FruitPhase -eq 'visible' -and $f.FruitType -eq 3 } 30000
     if ($null -eq $level4) { throw 'Level 4 fruit frame was not observed.' }
     [void](Sync-Capture $level4 'level4-fruit-visible')
     if (-not (Wait-ForLog 'FRUITVAL LEVEL4_EXPIRATION_OBSERVED' 30000)) { throw 'Level 4 fruit expiration was not observed.' }

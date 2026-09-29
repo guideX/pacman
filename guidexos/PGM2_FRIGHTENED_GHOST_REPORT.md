@@ -125,11 +125,14 @@ animation was observed in a live GUI session.
 
 ## Remaining gaps and PGM3 candidates
 
+- PGM3 completed the source-backed fruit lifecycle and added a bounded,
+  native-only fruit score popup. This presentation choice does not change the
+  VB6 parity finding that the reference has no score popups.
 - Repeat the visual PGM2 scenario after the guideXOS host provides an
   operational GUI command path.
 - Consider persistent high-score storage as a separate design.
-- Treat score popups, title/coin/credit flow, attract mode, and two-player play
-  as explicit product choices; the inspected source does not define them.
+- Treat ghost score popups, title/coin/credit flow, attract mode, and two-player
+  play as explicit product choices; the inspected source does not define them.
 - Preserve the deterministic eyes-return route and the lack of a shared
   Chase/Scatter schedule unless a later phase chooses to change those
   source-backed boundaries.

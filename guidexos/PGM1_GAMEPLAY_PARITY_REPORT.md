@@ -66,7 +66,7 @@ existing deterministic tests; they are not inferred from arcade conventions.
 | Ghost house and AI | Present; deterministic difference | All four source ghosts and their distinct targeting/release routines are implemented. The native version replaces unseeded VB6 `Rnd` choices with deterministic choices and uses bounded wall-safe eyes return. The source has no shared Chase/Scatter schedule. |
 | Frightened mode and ghost combos | Present and working | Per-ghost eligibility/timers, reversal, half-rate movement, blue/flashing appearance, ghost eating, return, and 200/400/800/1600 scoring are present. Energizers reset the combo. The native level reset also clears it; the source leaves the counter untouched, but no ghost can score again before another energizer resets it. |
 | Fruit | Present and working | Source timing, level mapping, lifetime, collision/scoring, death pause, and one-time collection are implemented. Levels above eight safely use the Level 8 mapping, matching the source's level cap. |
-| Score and HUD | Present; scoped visual differences | Pill/ghost/fruit/bonus scoring is centralized and bounded. High score is in-memory, initialized to 10,000, and survives a Game Over restart. Reserve lives and fruit history are displayed. The source has no score popups, persistent high-score file, or textual level label. |
+| Score and HUD | Present; scoped visual differences | Pill/ghost/fruit/bonus scoring is centralized and bounded. High score is in-memory, initialized to 10,000, and survives a Game Over restart. Reserve lives and fruit history are displayed. The source has no score popups, persistent high-score file, or textual level label; PGM3 adds a bounded native-only fruit score popup. |
 | Level progression | Present and working; intentionally limited content | Levels advance and cap at eight, apply the source frightened-duration rule, and reset pellets/actors. The legacy project itself rebuilds the same maze each level and has no second maze asset. |
 | Ready/power-pellet visuals | Present; one intentional approximation | Ready timing/text is represented. Native adds a shared 500 ms power-pill visibility blink; the source draws pills once and removes them only on consumption. |
 | Game loop and performance | Present and deterministic | Simulation advances on monotonic time in fixed 10 ms steps with bounded catch-up. Rendering and audio submission are outside game logic; no per-update resource load or unbounded gameplay queue was found. |
@@ -148,9 +148,10 @@ runtime proof. PGM1's attempted hosted run does not add runtime audio evidence.
   reference keeps it in memory only.
 - Continue using the Nexgen ghost behavior as the target. Do not add an
   arcade-style shared Chase/Scatter schedule absent from the reference.
-- Treat pause, numeric level text, score popups, multiple maze content, and
-  enhanced transition effects as new product choices rather than parity gaps;
-  the inspected source does not define those behaviors.
+- Treat pause, numeric level text, ghost score popups, multiple maze content,
+  and enhanced transition effects as new product choices rather than parity
+  gaps; the inspected source does not define those behaviors. PGM3 separately
+  adds a bounded fruit score popup as native-only feedback.
 
 ## Final result
 

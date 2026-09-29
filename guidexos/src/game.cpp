@@ -308,6 +308,15 @@ static void reset_fruit_for_level(GameState* game) {
     game->fruit.y = rules.y;
 }
 
+static void advance_fruit_score_popup(GameState* game) {
+    if (!game || game->fruit.phase != FruitPhase::ScorePopup) return;
+    if (game->fruit.popupStepsRemaining > 0u) --game->fruit.popupStepsRemaining;
+    if (game->fruit.popupStepsRemaining == 0u) {
+        game->fruit.phase = FruitPhase::Inactive;
+        game->visualDirty = true;
+    }
+}
+
 static void reset_power_pill_animation(GameState* game) {
     if (!game) return;
     game->powerPillVisible = true;
@@ -576,8 +585,9 @@ static void resolve_fruit_collision(GameState* game) {
     if (!game || game->fruit.phase != FruitPhase::Visible ||
         !pacman_collides_with_fruit(game->pacman, game->fruit)) return;
     const uint32_t score = game->fruit.scoreValue;
-    game->fruit.phase = FruitPhase::Inactive;
+    game->fruit.phase = FruitPhase::ScorePopup;
     game->fruit.visibleStepsRemaining = 0;
+    game->fruit.popupStepsRemaining = kPacManFruitScorePopupDurationSteps;
     game->fruitConsumed = true;
     game->fruitScoreAwarded = true;
     game->fruitScoreAwardedValue = score;
@@ -1306,6 +1316,10 @@ static void enter_dying(GameState* game) {
     if (encounterWasActive) game->powerPillEncounterReset = true;
     game->ghostEatChain = 0;
     game->frightenedFlashPhase = 0;
+    if (game->fruit.phase == FruitPhase::ScorePopup) {
+        game->fruit.phase = FruitPhase::Inactive;
+        game->fruit.popupStepsRemaining = 0;
+    }
 
     game->playState = PlayState::Dying;
     game->collisionDetected = true;
@@ -1346,6 +1360,8 @@ static void update_dying(GameState* game) {
 
     clear_held(&game->held);
     game->pacman.requestedDirection = Direction::None;
+    reset_fruit_for_level(game);
+    game->fruitReset = true;
     game->playState = PlayState::GameOver;
     ++game->gameOverTransitions;
     game->gameOverEntered = true;
@@ -1979,6 +1995,9 @@ void game_update(GameState* game) {
         ++game->simulationSteps;
         return;
     }
+
+    // Popup lifetime uses simulation time and pauses with every non-playing state.
+    advance_fruit_score_popup(game);
 
     PacManState& pacman = game->pacman;
     if (pacman.offset == 0) {
