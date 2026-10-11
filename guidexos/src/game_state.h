@@ -34,6 +34,7 @@ struct PacManState {
     Direction direction;
     Direction facingDirection;
     Direction requestedDirection;
+    bool turnRequestPending;
     int offset;
     int speed;
     int mouth;

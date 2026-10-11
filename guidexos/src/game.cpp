@@ -135,6 +135,17 @@ static Direction latest_held_direction(const HeldDirections& held) {
     return Direction::None;
 }
 
+static bool direction_is_held(const HeldDirections& held, Direction direction) {
+    switch (direction) {
+    case Direction::Left: return held.left;
+    case Direction::Right: return held.right;
+    case Direction::Up: return held.up;
+    case Direction::Down: return held.down;
+    case Direction::None: return false;
+    }
+    return false;
+}
+
 static bool accepts_direction_input(PlayState state) {
     return state != PlayState::GameOver;
 }
@@ -180,6 +191,7 @@ static void reset_pacman(PacManState* pacman) {
     pacman->y = 376;
     pacman->direction = Direction::Right;
     pacman->facingDirection = Direction::Right;
+    pacman->turnRequestPending = false;
     // The historical actor faces and starts moving right. Reset clears stale
     // buffered taps; transition code may restore only a direction still held
     // while the source keyboard timer was stopped for Ready.
@@ -523,6 +535,7 @@ static void consume_target_pill(GameState* game) {
         // The legacy keyboard timer resumes only after Ready and samples keys
         // that are still down. Drop released taps while retaining held input.
         game->pacman.requestedDirection = latest_held_direction(game->held);
+        game->pacman.turnRequestPending = game->pacman.requestedDirection != Direction::None;
         game->playState = PlayState::LevelComplete;
         game->levelCompleteStepsRemaining = kPacManLevelCompleteDelaySteps;
         ++game->levelCompleteTransitions;
@@ -1331,6 +1344,7 @@ static void enter_dying(GameState* game) {
     // Retain physically held keys through the native death and Ready delays,
     // matching the source's first keyboard poll after its Ready timer.
     game->pacman.requestedDirection = latest_held_direction(game->held);
+    game->pacman.turnRequestPending = game->pacman.requestedDirection != Direction::None;
     if (game->lives > 0) {
         --game->lives;
         game->lifeDecremented = true;
@@ -1348,9 +1362,11 @@ static void update_dying(GameState* game) {
     if (game->lives > 0) {
         const HeldDirections held = game->held;
         const Direction requested = game->pacman.requestedDirection;
+        const bool turnRequestPending = game->pacman.turnRequestPending;
         reset_actor_positions(game);
         game->held = held;
         game->pacman.requestedDirection = requested;
+        game->pacman.turnRequestPending = turnRequestPending;
         game->playState = PlayState::ReadyAfterDeath;
         reset_ready_animation(game, kPacManReadyAfterDeathSteps);
         game->actorReset = true;
@@ -1360,6 +1376,7 @@ static void update_dying(GameState* game) {
 
     clear_held(&game->held);
     game->pacman.requestedDirection = Direction::None;
+    game->pacman.turnRequestPending = false;
     reset_fruit_for_level(game);
     game->fruitReset = true;
     game->playState = PlayState::GameOver;
@@ -1779,6 +1796,7 @@ void game_reset_level(GameState* game) {
     const bool preserveReadyInput = game->playState == PlayState::LevelComplete;
     const HeldDirections readyHeld = game->held;
     const Direction readyRequested = game->pacman.requestedDirection;
+    const bool readyTurnRequestPending = game->pacman.turnRequestPending;
     const uint32_t oldLevel = normalize_level_number(game->levelNumber);
     game->levelNumber = oldLevel < kPacManHistoricalMaximumLevel
         ? oldLevel + 1u : kPacManHistoricalMaximumLevel;
@@ -1805,6 +1823,7 @@ void game_reset_level(GameState* game) {
     if (preserveReadyInput) {
         game->held = readyHeld;
         game->pacman.requestedDirection = readyRequested;
+        game->pacman.turnRequestPending = readyTurnRequestPending;
     }
     game->visualDirty = true;
     game->levelReset = true;
@@ -1902,14 +1921,23 @@ void game_press_direction(GameState* game, Direction direction) {
     }
     set_held(&game->held, direction, true);
     game->pacman.requestedDirection = direction;
+    game->pacman.turnRequestPending = true;
     game->visualDirty = true;
 }
 
 void game_release_direction(GameState* game, Direction direction) {
     if (!game || direction == Direction::None) return;
     set_held(&game->held, direction, false);
-    if (game->playState != PlayState::Playing && game->pacman.requestedDirection == direction) {
+    if (game->pacman.requestedDirection != direction) return;
+    if (game->playState != PlayState::Playing) {
         game->pacman.requestedDirection = latest_held_direction(game->held);
+        game->pacman.turnRequestPending = game->pacman.requestedDirection != Direction::None;
+    } else if (!game->pacman.turnRequestPending) {
+        // A tap remains buffered until its first legal junction. Once a held
+        // turn has already been accepted, key-up removes the persistent
+        // steering preference while preserving any other held direction.
+        game->pacman.requestedDirection = latest_held_direction(game->held);
+        game->pacman.turnRequestPending = game->pacman.requestedDirection != Direction::None;
     }
 }
 
@@ -1917,6 +1945,7 @@ void game_focus_lost(GameState* game) {
     if (!game) return;
     clear_held(&game->held);
     game->pacman.requestedDirection = Direction::None;
+    game->pacman.turnRequestPending = false;
     game->pacman.direction = Direction::None;
     game->focused = false;
     game->visualDirty = true;
@@ -2003,9 +2032,15 @@ void game_update(GameState* game) {
     if (pacman.offset == 0) {
         if (pacman.requestedDirection != Direction::None &&
             can_move(*game, pacman.x, pacman.y, pacman.requestedDirection)) {
-            if (pacman.direction != pacman.requestedDirection) game->turnAccepted = true;
-            pacman.direction = pacman.requestedDirection;
+            const Direction acceptedDirection = pacman.requestedDirection;
+            if (pacman.direction != acceptedDirection) game->turnAccepted = true;
+            pacman.direction = acceptedDirection;
             pacman.facingDirection = pacman.direction;
+            pacman.turnRequestPending = false;
+            if (!direction_is_held(game->held, acceptedDirection)) {
+                pacman.requestedDirection = latest_held_direction(game->held);
+                pacman.turnRequestPending = pacman.requestedDirection != Direction::None;
+            }
             game->visualDirty = true;
         }
 

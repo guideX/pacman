@@ -8,7 +8,10 @@
 
 namespace {
 
+uint32_t g_expectationCount = 0u;
+
 bool expect(bool condition, const char* label) {
+    ++g_expectationCount;
     if (!condition) std::cerr << "FAIL: " << label << "\n";
     return condition;
 }
@@ -1692,6 +1695,48 @@ bool test_buffered_turn_and_tunnel_counts() {
     return ok;
 }
 
+bool test_released_direction_buffer_lifecycle() {
+    bool ok = true;
+    GameState game{};
+    game_initialize(&game);
+    game.pacman.x = 232;
+    game.pacman.y = 232;
+    game.pacman.offset = 0;
+    game.pacman.speed = 1;
+    game.pacman.direction = Direction::Right;
+    game.pacman.facingDirection = Direction::Right;
+    game.pacman.requestedDirection = Direction::None;
+    ok &= expect(can_move(game, game.pacman.x, game.pacman.y, Direction::Up),
+                 "buffer lifecycle fixture is at a legal junction");
+
+    game_press_direction(&game, Direction::Up);
+    game_release_direction(&game, Direction::Up);
+    game_update(&game);
+    ok &= expect(game.turnAccepted && game.pacman.direction == Direction::Up,
+                 "a released early turn remains buffered through its first legal junction");
+    ok &= expect(game.pacman.requestedDirection == Direction::None,
+                 "a released turn request is consumed after its first legal use");
+
+    game_initialize(&game);
+    game.pacman.x = 232;
+    game.pacman.y = 232;
+    game.pacman.offset = 0;
+    game.pacman.speed = 1;
+    game.pacman.direction = Direction::Right;
+    game.pacman.facingDirection = Direction::Right;
+    game.pacman.requestedDirection = Direction::None;
+    game_press_direction(&game, Direction::Up);
+    game_update(&game);
+    ok &= expect(game.held.up && game.pacman.requestedDirection == Direction::Up &&
+                 !game.pacman.turnRequestPending,
+                 "a held turn keeps steering after its first legal intersection");
+    game_release_direction(&game, Direction::Up);
+    ok &= expect(game.pacman.direction == Direction::Up &&
+                 game.pacman.requestedDirection == Direction::None,
+                 "releasing after a held turn clears the sticky request immediately");
+    return ok;
+}
+
 bool test_completion_reset_and_overflow() {
     bool ok = true;
     GameState game{};
@@ -2944,6 +2989,7 @@ int main() {
     ok &= test_eaten_return_and_lifecycle_reset();
     ok &= test_final_power_pill_and_renderer();
     ok &= test_buffered_turn_and_tunnel_counts();
+    ok &= test_released_direction_buffer_lifecycle();
     ok &= test_completion_reset_and_overflow();
     ok &= test_red_ghost_movement();
     ok &= test_red_direction_selection();
@@ -2958,6 +3004,7 @@ int main() {
     ok &= test_fruit_and_extra_life();
     ok &= test_session_hud_and_power_pill_blink();
     ok &= test_ready_input_buffering();
-    std::cout << (ok ? "PacMan game logic tests PASS\n" : "PacMan game logic tests FAIL\n");
+    std::cout << (ok ? "PacMan game logic tests PASS" : "PacMan game logic tests FAIL")
+              << ": groups=36 checks=" << g_expectationCount << "\n";
     return ok ? 0 : 1;
 }

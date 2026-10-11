@@ -4,6 +4,7 @@
 #include "game.h"
 #include "game_types.h"
 #include "pacman_audio_runtime.h"
+#include "pacman_timing.h"
 #include "renderer.h"
 
 #ifndef PACMAN_ENABLE_DIAGNOSTICS
@@ -105,8 +106,50 @@ static gx_result pacbm_poll_event(gx_app_context* ctx, gx_event* event, int time
 }
 #endif
 
-static const uint64_t kFixedStepMs = 10u;
-static const uint64_t kMaxElapsedMs = 250u;
+#if PACMAN_ENABLE_DIAGNOSTICS
+static void append_timing_text(char* output, uint32_t* index, uint32_t capacity,
+                               const char* value) {
+    if (!output || !index || !value) return;
+    while (*value && *index + 1u < capacity) output[(*index)++] = *value++;
+}
+
+static void append_timing_number(char* output, uint32_t* index, uint32_t capacity,
+                                 uint64_t value) {
+    char digits[20];
+    uint32_t length = 0;
+    do {
+        digits[length++] = static_cast<char>('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0u && length < sizeof(digits));
+    while (length > 0u && *index + 1u < capacity) output[(*index)++] = digits[--length];
+}
+
+static void log_timing_sample(gx_app_context* ctx, const GameState& game,
+                              const PacManFixedStepClock& clock) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    char message[256];
+    uint32_t index = 0;
+    append_timing_text(message, &index, sizeof(message), "PacMan timing elapsed_ms=");
+    append_timing_number(message, &index, sizeof(message), clock.totalElapsedMs);
+    append_timing_text(message, &index, sizeof(message), " sim_steps=");
+    append_timing_number(message, &index, sizeof(message), clock.totalSteps);
+    append_timing_text(message, &index, sizeof(message), " backlog_ms=");
+    append_timing_number(message, &index, sizeof(message), clock.accumulatedMs);
+    append_timing_text(message, &index, sizeof(message), " max_backlog_ms=");
+    append_timing_number(message, &index, sizeof(message), clock.maximumBacklogMs);
+    append_timing_text(message, &index, sizeof(message), " dropped_ms=");
+    append_timing_number(message, &index, sizeof(message), clock.droppedMilliseconds);
+    append_timing_text(message, &index, sizeof(message), " catchup_frames=");
+    append_timing_number(message, &index, sizeof(message), clock.catchUpFrames);
+    append_timing_text(message, &index, sizeof(message), " max_steps_per_frame=");
+    append_timing_number(message, &index, sizeof(message), clock.maximumStepsPerFrame);
+    append_timing_text(message, &index, sizeof(message), " level=");
+    append_timing_number(message, &index, sizeof(message), game.levelNumber);
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+}
+#endif
+
 static const uint32_t kMaxCatchUpSteps = 8u;
 static const uint64_t kVisualIntervalMs = 16u;
 static const int kPacManRestartKeyEnter = 13;
@@ -438,7 +481,6 @@ static void log_game_events(gx_app_context* ctx, GameState& game) {
     if (game.actorReset) ctx->host->log(ctx, "PacMan actors reset after death");
     if (game.gameOverEntered) ctx->host->log(ctx, "PacMan Game Over entered");
     if (game.sessionRestarted) ctx->host->log(ctx, "PacMan new-game reset complete");
-    static const char* labels[] = {"Red", "Pink", "Cyan", "Orange"};
     for (uint32_t ghostIndex = 0; ghostIndex < kPacManGhostCount; ++ghostIndex) {
         if (game.ghostTimerInitialized[ghostIndex]) {
             log_game_value(ctx, "PacMan frightened timer initialized: ",
@@ -458,12 +500,6 @@ static void log_game_events(gx_app_context* ctx, GameState& game) {
             ctx->host->log(ctx, "PacMan ghost entered returning/reset state");
         }
         if (game.ghostReturned[ghostIndex]) ctx->host->log(ctx, "PacMan ghost returned to normal play");
-#if !PACMAN_BAREMETAL_LEVEL_VALIDATION
-        // The validation build carries complete actor snapshots in its
-        // bounded BMLVL transition breadcrumbs. Avoid per-step ghost dumps so
-        // the bare-metal serial channel cannot overrun while the game runs.
-        log_diagnostic_ghost_state(ctx, labels[ghostIndex], game.ghosts[ghostIndex]);
-#endif
     }
     // Session restart is an edge-triggered diagnostic event. Consume it after
     // the frame's event log so it cannot flood hosted serial output while the
@@ -1305,9 +1341,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     pacbm_marker(ctx, "PACBM 11 MAIN_LOOP_ENTER");
     uint64_t previousTicks = pacbm_get_ticks_ms(ctx);
     uint64_t lastPresentedTicks = previousTicks;
-    uint64_t accumulatorMs = 0;
+    PacManFixedStepClock timingClock{};
+    pacman_fixed_step_clock_initialize(&timingClock, previousTicks);
     bool running = true;
     bool simulationStartedLogged = false;
+#if PACMAN_ENABLE_DIAGNOSTICS
+    uint64_t nextTimingSampleMs = 60000u;
+#endif
 #if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
     uint32_t hostedDangerPlacementCount = 0;
 #endif
@@ -1380,20 +1420,10 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         if (!running) break;
 
         const uint64_t currentTicks = pacbm_get_ticks_ms(ctx);
-        uint64_t elapsedMs = currentTicks >= previousTicks ? currentTicks - previousTicks : 0;
-        if (currentTicks < previousTicks) {
-            ctx->host->log(ctx, "PacMan timing tick regression clamped");
-        }
-        previousTicks = currentTicks;
-        if (elapsedMs > kMaxElapsedMs) {
-            elapsedMs = kMaxElapsedMs;
-            ctx->host->log(ctx, "PacMan timing interval clamped");
-        }
-        accumulatorMs += elapsedMs;
-        if (accumulatorMs > kMaxElapsedMs) accumulatorMs = kMaxElapsedMs;
+        const uint64_t elapsedMs = pacman_fixed_step_clock_sample(&timingClock, currentTicks);
 
         uint32_t updates = 0;
-        while (accumulatorMs >= kFixedStepMs && updates < kMaxCatchUpSteps) {
+        while (pacman_fixed_step_clock_has_step(timingClock) && updates < kMaxCatchUpSteps) {
 #if PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
             fruit_validation_prepare(ctx, &game);
 #endif
@@ -1516,7 +1546,8 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             }
 #endif
 #if PACMAN_BAREMETAL_LEVEL_VALIDATION
-            baremetal_level_prepare_final_consumable(ctx, window, &game, currentTicks, accumulatorMs);
+            baremetal_level_prepare_final_consumable(ctx, window, &game, currentTicks,
+                                                      timingClock.accumulatedMs);
 #endif
 #if PACMAN_ENABLE_DIAGNOSTICS
             const bool traceUpdate = g_pacbmUpdateMarkers < 5u;
@@ -1530,7 +1561,7 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 ++g_pacbmUpdateMarkers;
             }
 #endif
-            accumulatorMs -= kFixedStepMs;
+            pacman_fixed_step_clock_consume_step(&timingClock);
             ++updates;
             if (!simulationStartedLogged) {
                 ctx->host->log(ctx, "PacMan fixed-step simulation started");
@@ -1544,17 +1575,27 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (game.orangeTunnelWrapped) ctx->host->log(ctx, "PacMan Orange ghost tunnel wrap");
 #if PACMAN_BAREMETAL_LEVEL_VALIDATION
             baremetal_level_observe_update(ctx, window, game, currentTicks, elapsedMs,
-                                            accumulatorMs, updates);
+                                            timingClock.accumulatedMs, updates);
 #endif
 #if PACMAN_HOSTED_FRUIT_TEST || PACMAN_BAREMETAL_FRUIT_VALIDATION
             fruit_validation_observe(ctx, &game);
 #endif
             log_game_events(ctx, game);
         }
-        if (updates == kMaxCatchUpSteps && accumulatorMs >= kFixedStepMs) {
-            accumulatorMs = 0;
-            ctx->host->log(ctx, "PacMan simulation catch-up clamped");
+        pacman_fixed_step_clock_finish_frame(&timingClock, updates, kMaxCatchUpSteps);
+#if PACMAN_ENABLE_DIAGNOSTICS
+        if (timingClock.totalElapsedMs >= nextTimingSampleMs) {
+            log_timing_sample(ctx, game, timingClock);
+            // Actor positions and modes are sampled once per minute. Normal
+            // update and render paths never emit repeated state snapshots.
+            static const char* labels[] = {"Red", "Pink", "Cyan", "Orange"};
+            for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+                log_diagnostic_ghost_state(ctx, labels[index], game.ghosts[index]);
+            }
+            const uint64_t minute = 60000u;
+            nextTimingSampleMs = (timingClock.totalElapsedMs / minute + 1u) * minute;
         }
+#endif
 
         if (game.visualDirty && currentTicks - lastPresentedTicks >= kVisualIntervalMs) {
             if (!render_and_present(ctx, window, sprites, game)) {

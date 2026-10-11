@@ -10,6 +10,8 @@
 
 namespace {
 
+uint32_t g_expectationCount = 0u;
+
 struct Recorder {
     PacManSoundId sounds[256];
     uint32_t count;
@@ -122,6 +124,7 @@ static PacManAudioSubmitResult record_sound(void* userData, PacManSoundId sound)
 }
 
 static bool expect(bool condition, const char* message) {
+    ++g_expectationCount;
     if (condition) return true;
     printf("FAIL: %s\n", message);
     return false;
@@ -546,6 +549,6 @@ int main() {
     ok &= test_event_mapping_and_alternation();
     ok &= test_failure_is_silent_and_bounded();
     if (!ok) return 1;
-    printf("PacMan audio tests passed.\n");
+    printf("PacMan audio tests passed: groups=6 checks=%u\n", g_expectationCount);
     return 0;
 }

@@ -176,7 +176,7 @@ set(GUIDEXOS_OBJECTS "${GUIDEXOS_MAIN_OBJECT}" "${GUIDEXOS_GAME_OBJECT}" "${GUID
 add_custom_command(OUTPUT "${GUIDEXOS_MAIN_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
     COMMAND "${GUIDEXOS_CLANG}" --target=x86_64-unknown-elf ${PACMAN_DIAGNOSTIC_DEFINITION} ${PACMAN_DANGER_TEST_DEFINITION} ${PACMAN_RED_MOVEMENT_TEST_DEFINITION} ${PACMAN_PINK_MOVEMENT_TEST_DEFINITION} ${PACMAN_CYAN_MOVEMENT_TEST_DEFINITION} ${PACMAN_ORANGE_MOVEMENT_TEST_DEFINITION} ${PACMAN_POWER_PILL_TEST_DEFINITION} ${PACMAN_LEVEL_TEST_DEFINITION} ${PACMAN_BAREMETAL_LEVEL_DEFINITION} ${PACMAN_FRUIT_TEST_DEFINITION} ${PACMAN_BAREMETAL_FRUIT_DEFINITION} ${GUIDEXOS_NATIVE_CXX_FLAGS} -c "${GUIDEXOS_APP_ROOT}/src/main.cpp" -I"${GUIDEXOS_SDK_ROOT}/include" -I"${GUIDEXOS_APP_ROOT}/src" -o "${GUIDEXOS_MAIN_OBJECT}"
-    DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/level_rules.h src/bitmap_loader.h src/pacman_audio.h src/pacman_audio_runtime.h src/renderer.h
+    DEPENDS src/main.cpp src/game_types.h src/game_state.h src/game.h src/level_rules.h src/bitmap_loader.h src/pacman_audio.h src/pacman_audio_runtime.h src/pacman_timing.h src/renderer.h
 )
 add_custom_command(OUTPUT "${GUIDEXOS_GAME_OBJECT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_BUILD_OBJ_DIR}"
@@ -224,6 +224,10 @@ add_executable(pacman-audio-tests tests/audio_test.cpp src/pacman_audio.cpp src/
 target_include_directories(pacman-audio-tests PRIVATE "${GUIDEXOS_SDK_ROOT}/include" "${GUIDEXOS_APP_ROOT}/src")
 target_compile_definitions(pacman-audio-tests PRIVATE PACMAN_AUDIO_ASSET_ROOT="${GUIDEXOS_AUDIO_SOURCE_ROOT}")
 set_target_properties(pacman-audio-tests PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+
+add_executable(pacman-endurance-tests tests/endurance_test.cpp src/game.cpp src/level.cpp src/level_rules.cpp)
+target_include_directories(pacman-endurance-tests PRIVATE "${GUIDEXOS_SDK_ROOT}/include" "${GUIDEXOS_APP_ROOT}/src")
+set_target_properties(pacman-endurance-tests PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 
 add_custom_command(TARGET ${GUIDEXOS_NATIVE_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${GUIDEXOS_STAGED_APP_DIR}/bin/${GUIDEXOS_APP_ARCH}"
