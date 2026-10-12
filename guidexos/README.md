@@ -108,6 +108,11 @@ Frame ownership is explicit: the app owns the input buffer and may reuse it afte
 
 ## Hosted launch and validation
 
+For a private bare-metal QEMU run of live Pac-Man gameplay, see
+[HOSTED_SOAK.md](HOSTED_SOAK.md). The reusable runner builds regression and
+production artifacts, copies the existing Server boot files into a uniquely
+owned runtime directory, and saves guest evidence and measurements there.
+
 Build the normal hosted server for discovery/inspection:
 
 ```powershell

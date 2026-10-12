@@ -67,6 +67,22 @@ static uint32_t g_pacbmTickMarkers = 0;
 static uint32_t g_pacbmPollMarkers = 0;
 static uint32_t g_pacbmUpdateMarkers = 0;
 static uint32_t g_pacbmFrameMarkers = 0;
+static uint64_t g_directionKeyDownEvents = 0;
+static uint64_t g_directionKeyUpEvents = 0;
+static uint64_t g_turnAcceptedEvents = 0;
+static uint64_t g_blockedDirectionEvents = 0;
+static uint64_t g_turnAcceptanceLatencyTotalMs = 0;
+static uint64_t g_turnAcceptanceLatencyMaxMs = 0;
+static uint64_t g_pendingTurnTickMs = 0;
+static bool g_pendingTurnRequest = false;
+static uint64_t g_actorLastProgressTicksMs[5] = {};
+static int g_actorLastX[5] = {};
+static int g_actorLastY[5] = {};
+static uint64_t g_frameDurationSamples = 0;
+static uint64_t g_frameDurationTotalMs = 0;
+static uint64_t g_frameDurationBuckets[129] = {};
+static uint64_t g_lastHealthSampleMs = 0;
+static uint64_t g_lastHealthFrameSequence = 0;
 
 static void pacbm_marker(gx_app_context* ctx, const char* marker) {
     if (!ctx || !ctx->host || !ctx->host->log || !marker) return;
@@ -124,13 +140,134 @@ static void append_timing_number(char* output, uint32_t* index, uint32_t capacit
     while (length > 0u && *index + 1u < capacity) output[(*index)++] = digits[--length];
 }
 
+static void append_timing_signed_number(char* output, uint32_t* index, uint32_t capacity,
+                                        int64_t value) {
+    if (value < 0) {
+        append_timing_text(output, index, capacity, "-");
+        value = -(value + 1) + 1;
+    }
+    append_timing_number(output, index, capacity, static_cast<uint64_t>(value));
+}
+
+static const char* diagnostic_play_state_name(PlayState state) {
+    switch (state) {
+    case PlayState::InitialReady: return "InitialReady";
+    case PlayState::Playing: return "Playing";
+    case PlayState::Dying: return "Dying";
+    case PlayState::ReadyAfterDeath: return "ReadyAfterDeath";
+    case PlayState::LevelComplete: return "LevelComplete";
+    case PlayState::GameOver: return "GameOver";
+    }
+    return "Unknown";
+}
+
+static uint32_t diagnostic_held_direction_mask(const HeldDirections& held) {
+    return (held.up ? 1u : 0u) | (held.down ? 2u : 0u) |
+        (held.left ? 4u : 0u) | (held.right ? 8u : 0u);
+}
+
+static void initialize_diagnostic_progress(const GameState& game, uint64_t nowMs) {
+    g_actorLastX[0] = game.pacman.x;
+    g_actorLastY[0] = game.pacman.y;
+    g_actorLastProgressTicksMs[0] = nowMs;
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        g_actorLastX[index + 1u] = game.ghosts[index].x;
+        g_actorLastY[index + 1u] = game.ghosts[index].y;
+        g_actorLastProgressTicksMs[index + 1u] = nowMs;
+    }
+}
+
+static void record_diagnostic_progress(const GameState& game, uint64_t nowMs) {
+    if (game.pacman.x != g_actorLastX[0] || game.pacman.y != g_actorLastY[0]) {
+        g_actorLastX[0] = game.pacman.x;
+        g_actorLastY[0] = game.pacman.y;
+        g_actorLastProgressTicksMs[0] = nowMs;
+    }
+    for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
+        const GhostState& ghost = game.ghosts[index];
+        const uint32_t actor = index + 1u;
+        if (ghost.x != g_actorLastX[actor] || ghost.y != g_actorLastY[actor]) {
+            g_actorLastX[actor] = ghost.x;
+            g_actorLastY[actor] = ghost.y;
+            g_actorLastProgressTicksMs[actor] = nowMs;
+        }
+    }
+}
+
+static uint64_t diagnostic_frame_percentile_ms(uint32_t percentile) {
+    if (g_frameDurationSamples == 0u) return 0u;
+    const uint64_t rank = (g_frameDurationSamples * percentile + 99u) / 100u;
+    uint64_t cumulative = 0;
+    for (uint32_t bucket = 0; bucket < 129u; ++bucket) {
+        cumulative += g_frameDurationBuckets[bucket];
+        if (cumulative >= rank) return bucket;
+    }
+    return 128u;
+}
+
+static void record_diagnostic_frame_duration(uint64_t startMs, uint64_t finishMs) {
+    const uint64_t durationMs = finishMs - startMs;
+    const uint32_t bucket = durationMs >= 128u ? 128u : static_cast<uint32_t>(durationMs);
+    ++g_frameDurationSamples;
+    g_frameDurationTotalMs += durationMs;
+    ++g_frameDurationBuckets[bucket];
+}
+
 static void log_timing_sample(gx_app_context* ctx, const GameState& game,
-                              const PacManFixedStepClock& clock) {
+                              const PacManFixedStepClock& clock, uint64_t nowMs) {
     if (!ctx || !ctx->host || !ctx->host->log) return;
-    char message[256];
+    char message[640];
     uint32_t index = 0;
     append_timing_text(message, &index, sizeof(message), "PacMan timing elapsed_ms=");
     append_timing_number(message, &index, sizeof(message), clock.totalElapsedMs);
+    append_timing_text(message, &index, sizeof(message), " simulation_ms=");
+    append_timing_number(message, &index, sizeof(message), clock.totalSteps * 10u);
+    append_timing_text(message, &index, sizeof(message), " guest_ticks_ms=");
+    append_timing_number(message, &index, sizeof(message), nowMs);
+    append_timing_text(message, &index, sizeof(message), " frame_seq=");
+    append_timing_number(message, &index, sizeof(message), g_frameSequence);
+    append_timing_text(message, &index, sizeof(message), " fps_milli=");
+    const uint64_t sampleElapsedMs = clock.totalElapsedMs - g_lastHealthSampleMs;
+    const uint64_t sampleFrameCount = g_frameSequence - g_lastHealthFrameSequence;
+    append_timing_number(message, &index, sizeof(message),
+        sampleElapsedMs == 0u ? 0u : sampleFrameCount * 1000000u / sampleElapsedMs);
+    append_timing_text(message, &index, sizeof(message), " frame_avg_us=");
+    append_timing_number(message, &index, sizeof(message),
+        g_frameDurationSamples == 0u ? 0u :
+            g_frameDurationTotalMs * 1000u / g_frameDurationSamples);
+    append_timing_text(message, &index, sizeof(message), " frame_p95_ms=");
+    append_timing_number(message, &index, sizeof(message), diagnostic_frame_percentile_ms(95u));
+    append_timing_text(message, &index, sizeof(message), " frame_p99_ms=");
+    append_timing_number(message, &index, sizeof(message), diagnostic_frame_percentile_ms(99u));
+    append_timing_text(message, &index, sizeof(message), " frame_samples=");
+    append_timing_number(message, &index, sizeof(message), g_frameDurationSamples);
+    append_timing_text(message, &index, sizeof(message), " pacman_state=");
+    append_timing_text(message, &index, sizeof(message), diagnostic_play_state_name(game.playState));
+    append_timing_text(message, &index, sizeof(message), " pacman=");
+    append_timing_signed_number(message, &index, sizeof(message), game.pacman.x);
+    append_timing_text(message, &index, sizeof(message), ",");
+    append_timing_signed_number(message, &index, sizeof(message), game.pacman.y);
+    append_timing_text(message, &index, sizeof(message), " dir=");
+    append_timing_text(message, &index, sizeof(message), game_direction_name(game.pacman.direction));
+    append_timing_text(message, &index, sizeof(message), " requested=");
+    append_timing_text(message, &index, sizeof(message), game_direction_name(game.pacman.requestedDirection));
+    append_timing_text(message, &index, sizeof(message), " held_mask=");
+    append_timing_number(message, &index, sizeof(message), diagnostic_held_direction_mask(game.held));
+    append_timing_text(message, &index, sizeof(message), " pacman_progress_age_ms=");
+    append_timing_number(message, &index, sizeof(message), nowMs - g_actorLastProgressTicksMs[0]);
+    append_timing_text(message, &index, sizeof(message), " key_down=");
+    append_timing_number(message, &index, sizeof(message), g_directionKeyDownEvents);
+    append_timing_text(message, &index, sizeof(message), " key_up=");
+    append_timing_number(message, &index, sizeof(message), g_directionKeyUpEvents);
+    append_timing_text(message, &index, sizeof(message), " turn_accepts=");
+    append_timing_number(message, &index, sizeof(message), g_turnAcceptedEvents);
+    append_timing_text(message, &index, sizeof(message), " turn_latency_avg_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        g_turnAcceptedEvents == 0u ? 0u : g_turnAcceptanceLatencyTotalMs / g_turnAcceptedEvents);
+    append_timing_text(message, &index, sizeof(message), " turn_latency_max_ms=");
+    append_timing_number(message, &index, sizeof(message), g_turnAcceptanceLatencyMaxMs);
+    append_timing_text(message, &index, sizeof(message), " blocked_turns=");
+    append_timing_number(message, &index, sizeof(message), g_blockedDirectionEvents);
     append_timing_text(message, &index, sizeof(message), " sim_steps=");
     append_timing_number(message, &index, sizeof(message), clock.totalSteps);
     append_timing_text(message, &index, sizeof(message), " backlog_ms=");
@@ -147,6 +284,11 @@ static void log_timing_sample(gx_app_context* ctx, const GameState& game,
     append_timing_number(message, &index, sizeof(message), game.levelNumber);
     message[index] = '\0';
     ctx->host->log(ctx, message);
+    g_lastHealthSampleMs = clock.totalElapsedMs;
+    g_lastHealthFrameSequence = g_frameSequence;
+    g_frameDurationSamples = 0;
+    g_frameDurationTotalMs = 0;
+    for (uint32_t bucket = 0; bucket < 129u; ++bucket) g_frameDurationBuckets[bucket] = 0;
 }
 #endif
 
@@ -321,6 +463,7 @@ static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacI
                               const GameState& game) {
     const uint64_t frameSequence = ++g_frameSequence;
 #if PACMAN_ENABLE_DIAGNOSTICS
+    const uint64_t frameStartMs = gx_get_ticks_ms(ctx);
     const bool traceFrame = g_pacbmFrameMarkers < 3u;
     if (traceFrame) pacbm_marker(ctx, "PACBM 18 NEXT_FRAME_BEGIN");
 #endif
@@ -333,6 +476,7 @@ static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacI
     const gx_result result = present(ctx, window);
 #if PACMAN_ENABLE_DIAGNOSTICS
     if (frameSequence == 1u) pacbm_marker(ctx, "PACBM 10 FIRST_FRAME_CALL_END");
+    record_diagnostic_frame_duration(frameStartMs, gx_get_ticks_ms(ctx));
     if (traceFrame) {
         pacbm_marker(ctx, "PACBM 19 NEXT_FRAME_END");
         ++g_pacbmFrameMarkers;
@@ -345,6 +489,7 @@ static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacI
 }
 
 static void log_direction_request(gx_app_context* ctx, Direction direction) {
+#if PACMAN_ENABLE_DIAGNOSTICS
     if (!ctx || !ctx->host || !ctx->host->log) return;
     char message[64];
     const char* name = game_direction_name(direction);
@@ -357,7 +502,33 @@ static void log_direction_request(gx_app_context* ctx, Direction direction) {
     for (uint32_t i = 0; name[i] && index + 1u < sizeof(message); ++i) message[index++] = name[i];
     message[index] = '\0';
     ctx->host->log(ctx, message);
+#else
+    (void)ctx;
+    (void)direction;
+#endif
 }
+
+#if PACMAN_ENABLE_DIAGNOSTICS
+static void log_diagnostic_key_event(gx_app_context* ctx, Direction direction,
+                                     bool pressed, uint64_t nowMs) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    if (pressed) ++g_directionKeyDownEvents;
+    else ++g_directionKeyUpEvents;
+    char message[160];
+    uint32_t index = 0;
+    append_timing_text(message, &index, sizeof(message), "PacMan key event seq=");
+    append_timing_number(message, &index, sizeof(message),
+                         g_directionKeyDownEvents + g_directionKeyUpEvents);
+    append_timing_text(message, &index, sizeof(message), " action=");
+    append_timing_text(message, &index, sizeof(message), pressed ? "down" : "up");
+    append_timing_text(message, &index, sizeof(message), " direction=");
+    append_timing_text(message, &index, sizeof(message), game_direction_name(direction));
+    append_timing_text(message, &index, sizeof(message), " tick_ms=");
+    append_timing_number(message, &index, sizeof(message), nowMs);
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+}
+#endif
 
 static void log_game_value(gx_app_context* ctx, const char* prefix, uint32_t value) {
 #if PACMAN_ENABLE_DIAGNOSTICS
@@ -383,7 +554,8 @@ static void log_game_value(gx_app_context* ctx, const char* prefix, uint32_t val
 
 #if PACMAN_ENABLE_DIAGNOSTICS
 static void log_diagnostic_ghost_state(gx_app_context* ctx, const char* label,
-                                       const GhostState& ghost) {
+                                       const GhostState& ghost, const GameState& game,
+                                       uint64_t nowMs, uint32_t actorIndex) {
     if (!ctx || !ctx->host || !ctx->host->log || !label) return;
     char message[256];
     uint32_t index = 0;
@@ -419,6 +591,20 @@ static void log_diagnostic_ghost_state(gx_app_context* ctx, const char* label,
     append_text(ghost_release_state_name(ghost.releaseState));
     append_text(" condition=");
     append_text(ghost_condition_name(ghost.condition));
+    append_text(" active=");
+    append_number(ghost.active ? 1 : 0);
+    append_text(" collision_active=");
+    append_number(ghost.collisionActive ? 1 : 0);
+    const bool movementExpected = game.playState == PlayState::Playing && ghost.active &&
+        ghost.releaseState == GhostReleaseState::Normal &&
+        ghost.condition != GhostCondition::Eaten && ghost.condition != GhostCondition::Returning;
+    const uint64_t progressAgeMs = nowMs - g_actorLastProgressTicksMs[actorIndex + 1u];
+    append_text(" movement_expected=");
+    append_number(movementExpected ? 1 : 0);
+    append_text(" progress_age_ms=");
+    append_number(progressAgeMs);
+    append_text(" possible_stall=");
+    append_number(movementExpected && progressAgeMs >= 5000u ? 1 : 0);
     append_text(" pp=");
     append_number(ghost.powerPillStepsRemaining);
     append_text(" anim=");
@@ -1343,10 +1529,14 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
     uint64_t lastPresentedTicks = previousTicks;
     PacManFixedStepClock timingClock{};
     pacman_fixed_step_clock_initialize(&timingClock, previousTicks);
-    bool running = true;
-    bool simulationStartedLogged = false;
 #if PACMAN_ENABLE_DIAGNOSTICS
-    uint64_t nextTimingSampleMs = 60000u;
+    initialize_diagnostic_progress(game, previousTicks);
+    g_lastHealthFrameSequence = g_frameSequence;
+#endif
+    bool running = true;
+#if PACMAN_ENABLE_DIAGNOSTICS
+    bool simulationStartedLogged = false;
+    uint64_t lastTimingSampleTicks = previousTicks;
 #endif
 #if PACMAN_HOSTED_DANGER_TEST && !PACMAN_HOSTED_RED_MOVEMENT_TEST
     uint32_t hostedDangerPlacementCount = 0;
@@ -1405,9 +1595,17 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                 const Direction direction = game_direction_for_key(event.param1);
                 if (direction != Direction::None) {
                     if (event.param2 == GX_KEY_ACTION_DOWN) {
+#if PACMAN_ENABLE_DIAGNOSTICS
+                        g_pendingTurnTickMs = pacbm_get_ticks_ms(ctx);
+                        g_pendingTurnRequest = true;
+                        log_diagnostic_key_event(ctx, direction, true, g_pendingTurnTickMs);
+#endif
                         game_press_direction(&game, direction);
                         log_direction_request(ctx, direction);
                     } else if (event.param2 == GX_KEY_ACTION_UP) {
+#if PACMAN_ENABLE_DIAGNOSTICS
+                        log_diagnostic_key_event(ctx, direction, false, pacbm_get_ticks_ms(ctx));
+#endif
                         game_release_direction(&game, direction);
                     }
                 }
@@ -1554,6 +1752,9 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             if (traceUpdate) pacbm_marker(ctx, "PACBM 16 UPDATE_BEGIN");
 #endif
             game_update(&game);
+#if PACMAN_ENABLE_DIAGNOSTICS
+            record_diagnostic_progress(game, currentTicks);
+#endif
             pacman_audio_process_game_events(&audioState, &game, pacman_audio_submit, ctx);
 #if PACMAN_ENABLE_DIAGNOSTICS
             if (traceUpdate) {
@@ -1563,16 +1764,32 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 #endif
             pacman_fixed_step_clock_consume_step(&timingClock);
             ++updates;
+#if PACMAN_ENABLE_DIAGNOSTICS
             if (!simulationStartedLogged) {
                 ctx->host->log(ctx, "PacMan fixed-step simulation started");
                 simulationStartedLogged = true;
             }
-            if (game.turnAccepted) ctx->host->log(ctx, "PacMan buffered turn accepted");
-            if (game.becameBlocked) ctx->host->log(ctx, "PacMan direction blocked by maze wall");
+            if (game.turnAccepted) {
+                ++g_turnAcceptedEvents;
+                if (g_pendingTurnRequest) {
+                    const uint64_t latencyMs = currentTicks - g_pendingTurnTickMs;
+                    g_turnAcceptanceLatencyTotalMs += latencyMs;
+                    if (latencyMs > g_turnAcceptanceLatencyMaxMs) {
+                        g_turnAcceptanceLatencyMaxMs = latencyMs;
+                    }
+                    g_pendingTurnRequest = false;
+                }
+                ctx->host->log(ctx, "PacMan buffered turn accepted");
+            }
+            if (game.becameBlocked) {
+                ++g_blockedDirectionEvents;
+                ctx->host->log(ctx, "PacMan direction blocked by maze wall");
+            }
             if (game.tunnelWrapped) ctx->host->log(ctx, "PacMan tunnel wrap");
             if (game.redTunnelWrapped) ctx->host->log(ctx, "PacMan Red ghost tunnel wrap");
             if (game.cyanTunnelWrapped) ctx->host->log(ctx, "PacMan Cyan ghost tunnel wrap");
             if (game.orangeTunnelWrapped) ctx->host->log(ctx, "PacMan Orange ghost tunnel wrap");
+#endif
 #if PACMAN_BAREMETAL_LEVEL_VALIDATION
             baremetal_level_observe_update(ctx, window, game, currentTicks, elapsedMs,
                                             timingClock.accumulatedMs, updates);
@@ -1584,16 +1801,16 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
         }
         pacman_fixed_step_clock_finish_frame(&timingClock, updates, kMaxCatchUpSteps);
 #if PACMAN_ENABLE_DIAGNOSTICS
-        if (timingClock.totalElapsedMs >= nextTimingSampleMs) {
-            log_timing_sample(ctx, game, timingClock);
+        if (currentTicks - lastTimingSampleTicks >= 60000u) {
+            log_timing_sample(ctx, game, timingClock, currentTicks);
             // Actor positions and modes are sampled once per minute. Normal
             // update and render paths never emit repeated state snapshots.
             static const char* labels[] = {"Red", "Pink", "Cyan", "Orange"};
             for (uint32_t index = 0; index < kPacManGhostCount; ++index) {
-                log_diagnostic_ghost_state(ctx, labels[index], game.ghosts[index]);
+                log_diagnostic_ghost_state(ctx, labels[index], game.ghosts[index], game,
+                                           currentTicks, index);
             }
-            const uint64_t minute = 60000u;
-            nextTimingSampleMs = (timingClock.totalElapsedMs / minute + 1u) * minute;
+            lastTimingSampleTicks = currentTicks;
         }
 #endif
 
