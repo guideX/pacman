@@ -213,3 +213,6 @@ pip-log.txt
 
 #Mr Developer
 .mr.developer.cfg
+
+# PST3 generated bare-metal boot media and packaging verification outputs.
+/guidexos/artifacts/pst3-baremetal/

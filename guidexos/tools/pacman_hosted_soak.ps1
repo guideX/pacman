@@ -67,17 +67,33 @@ $GameEventsPath = Join-Path $LogDir "pacman-events.log"
 $script:QemuProcess = $null
 $script:QmpPort = 0
 $script:SerialReader = $null
+$script:SerialReadPosition = 0L
 $script:SerialPending = ""
 $script:SerialTail = ""
 $script:LatestKeyDownSeq = 0L
 $script:LatestKeyUpSeq = 0L
 $script:LatestInputEvent = $null
 $script:LatestTiming = @{}
+$script:LatestStageTiming = @{}
+$script:PreviousTimingObservationTicks = 0L
+$script:PreviousTimingFrameSequence = 0L
+$script:PreviousTimingElapsedMs = 0L
 $script:LatestGhosts = @{}
 $script:LatestGameState = ""
 $script:PendingFaultCaptures = [System.Collections.Generic.List[object]]::new()
 $script:ReportedStalls = @{}
 $script:InputLatencies = [System.Collections.Generic.List[double]]::new()
+$script:QmpApiLatencies = [System.Collections.Generic.List[double]]::new()
+$script:PostQmpObservationLatencies = [System.Collections.Generic.List[double]]::new()
+$script:GuestHeldLatencies = [System.Collections.Generic.List[double]]::new()
+$script:LastQmpApiLatencyMs = 0.0
+$script:LastQmpConnectMs = 0.0
+$script:LastQmpCapabilitiesMs = 0.0
+$script:LastQmpSendkeyMs = 0.0
+$script:QmpConnectLatencies = [System.Collections.Generic.List[double]]::new()
+$script:QmpCapabilitiesLatencies = [System.Collections.Generic.List[double]]::new()
+$script:QmpSendkeyLatencies = [System.Collections.Generic.List[double]]::new()
+$script:QmpWrapperLatencies = [System.Collections.Generic.List[double]]::new()
 $script:InputEventRecords = [System.Collections.Generic.List[object]]::new()
 $script:DeathCount = 0
 $script:GameOverCount = 0
@@ -217,16 +233,23 @@ function Send-Qmp([string]$CommandLine) {
         throw "Refusing QMP access: owned QEMU PID $($script:QemuProcess.Id) does not own listening port $script:QmpPort."
     }
     $maximumCapabilityAttempts = 3
+    $connectTotalMs = 0.0
+    $capabilitiesTotalMs = 0.0
+    $sendkeyMs = 0.0
     for ($capabilityAttempt = 1; $capabilityAttempt -le $maximumCapabilityAttempts; ++$capabilityAttempt) {
         $client = [System.Net.Sockets.TcpClient]::new()
         $retryCapability = $false
         try {
+            $connectWatch = [System.Diagnostics.Stopwatch]::StartNew()
             $client.Connect("127.0.0.1", $script:QmpPort)
+            $connectWatch.Stop()
+            $connectTotalMs += $connectWatch.Elapsed.TotalMilliseconds
             $stream = $client.GetStream()
             $stream.ReadTimeout = 1500
             $newline = [string][char]13 + [string][char]10
             $capabilityRequest = '{"execute":"qmp_capabilities","id":"pacman-capabilities"}' + $newline
             $capabilityBytes = [System.Text.Encoding]::UTF8.GetBytes($capabilityRequest)
+            $capabilitiesWatch = [System.Diagnostics.Stopwatch]::StartNew()
             $stream.Write($capabilityBytes, 0, $capabilityBytes.Length)
             try {
                 [void](Read-QmpResponse $stream "pacman-capabilities" 5000)
@@ -237,6 +260,9 @@ function Send-Qmp([string]$CommandLine) {
                 if ($capabilityAttempt -ge $maximumCapabilityAttempts) { throw }
                 $retryCapability = $true
                 Write-Validation "qmp.capabilities.retry attempt=$capabilityAttempt/$maximumCapabilityAttempts reason=$($_.Exception.Message)"
+            } finally {
+                $capabilitiesWatch.Stop()
+                $capabilitiesTotalMs += $capabilitiesWatch.Elapsed.TotalMilliseconds
             }
             if (!$retryCapability) {
                 $request = @{
@@ -246,8 +272,14 @@ function Send-Qmp([string]$CommandLine) {
                 } | ConvertTo-Json -Compress
                 $request = $request + $newline
                 $requestBytes = [System.Text.Encoding]::UTF8.GetBytes($request)
+                $sendkeyWatch = [System.Diagnostics.Stopwatch]::StartNew()
                 $stream.Write($requestBytes, 0, $requestBytes.Length)
                 $response = Read-QmpResponse $stream "pacman-hmp" 10000
+                $sendkeyWatch.Stop()
+                $sendkeyMs = $sendkeyWatch.Elapsed.TotalMilliseconds
+                $script:LastQmpConnectMs = $connectTotalMs
+                $script:LastQmpCapabilitiesMs = $capabilitiesTotalMs
+                $script:LastQmpSendkeyMs = $sendkeyMs
                 return $response
             }
         } finally {
@@ -265,18 +297,24 @@ function Quote-WindowsArgument([string]$Value) {
 }
 
 function Get-SerialText {
-    if (!$script:SerialReader) { return }
+    if (!(Test-Path -LiteralPath $SerialPath)) { return }
+    $reader = $null
     try {
-        $endPosition = $script:SerialReader.Length
-        if ($script:SerialReader.Position -gt $endPosition) { $script:SerialReader.Position = 0 }
+        $endPosition = (Get-Item -LiteralPath $SerialPath).Length
+        if ($script:SerialReadPosition -gt $endPosition) { $script:SerialReadPosition = 0 }
+        if ($script:SerialReadPosition -ge $endPosition) { return }
+        $reader = [System.IO.File]::Open($SerialPath, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $reader.Position = $script:SerialReadPosition
         $chunkBuilder = [System.Text.StringBuilder]::new()
-        while ($script:SerialReader.Position -lt $endPosition) {
-            $available = [int][Math]::Min(65536, $endPosition - $script:SerialReader.Position)
+        while ($reader.Position -lt $endPosition) {
+            $available = [int][Math]::Min(65536, $endPosition - $reader.Position)
             $bytes = New-Object byte[] $available
-            $read = $script:SerialReader.Read($bytes, 0, $available)
+            $read = $reader.Read($bytes, 0, $available)
             if ($read -le 0) { break }
             [void]$chunkBuilder.Append([System.Text.Encoding]::UTF8.GetString($bytes, 0, $read))
         }
+        $script:SerialReadPosition = $reader.Position
         if ($chunkBuilder.Length -eq 0) { return }
         $script:SerialPending += $chunkBuilder.ToString()
         $lastNewline = $script:SerialPending.LastIndexOf([char]10)
@@ -294,7 +332,7 @@ function Get-SerialText {
             $line = $rawLine.TrimEnd([char]13)
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
             [void]$tailBuilder.AppendLine($line)
-            if ($line -match 'PacMan (timing|key event|(?:Red|Pink|Cyan|Orange) state|requested direction|buffered turn accepted|direction blocked|tunnel wrap|death state entered|Game Over entered|session restarted|power pill consumed|ghost entered frightened|ghost eaten|level complete|gameplay resumed)') {
+            if ($line -match 'PacMan (timing|stage timing|key event|(?:Red|Pink|Cyan|Orange) state|requested direction|buffered turn accepted|direction blocked|tunnel wrap|death state entered|Game Over entered|session restarted|power pill consumed|ghost entered frightened|ghost eaten|level complete|gameplay resumed)') {
                 $eventLines.Add($line)
             }
             if ($line -match 'PacMan key event seq=(?<seq>\d+) action=(?<action>down|up) direction=(?<direction>Up|Down|Left|Right) tick_ms=(?<tick>\d+)') {
@@ -303,6 +341,7 @@ function Get-SerialText {
                     Action = $Matches.action
                     Direction = $Matches.direction
                     TickMs = [long]$Matches.tick
+                    ObservedHostUtc = [DateTime]::UtcNow.ToString("o")
                     Line = $line
                 }
                 $script:LatestInputEvent = $eventRecord
@@ -321,10 +360,42 @@ function Get-SerialText {
                 foreach ($field in [regex]::Matches($line, '(?<name>[a-z0-9_]+)=(?<value>[A-Za-z0-9,._-]+)')) {
                     $sample[$field.Groups["name"].Value] = $field.Groups["value"].Value
                 }
+                $observedTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
+                $sample["timing_observation_span_s"] = ""
+                $sample["host_frame_calls_fps"] = ""
+                $sample["guest_clock_pct_host_wall"] = ""
+                if ($script:PreviousTimingObservationTicks -gt 0 -and $sample.ContainsKey("frame_seq")) {
+                    $spanSeconds = ($observedTicks - $script:PreviousTimingObservationTicks) /
+                        [double][System.Diagnostics.Stopwatch]::Frequency
+                    if ($spanSeconds -ge 1.0) {
+                        $frameDelta = [long]$sample["frame_seq"] - $script:PreviousTimingFrameSequence
+                        $guestElapsedDeltaMs = [long]$sample["elapsed_ms"] - $script:PreviousTimingElapsedMs
+                        $sample["timing_observation_span_s"] = [Math]::Round($spanSeconds, 3)
+                        $sample["host_frame_calls_fps"] = [Math]::Round($frameDelta / $spanSeconds, 3)
+                        $sample["guest_clock_pct_host_wall"] = if ($guestElapsedDeltaMs -ge 0) {
+                            [Math]::Round(100.0 * $guestElapsedDeltaMs / 1000.0 / $spanSeconds, 2)
+                        } else { "" }
+                        $script:PreviousTimingObservationTicks = $observedTicks
+                        $script:PreviousTimingFrameSequence = [long]$sample["frame_seq"]
+                        $script:PreviousTimingElapsedMs = [long]$sample["elapsed_ms"]
+                    }
+                } else {
+                    $script:PreviousTimingObservationTicks = $observedTicks
+                    $script:PreviousTimingFrameSequence = if ($sample.ContainsKey("frame_seq")) {
+                        [long]$sample["frame_seq"]
+                    } else { 0L }
+                    $script:PreviousTimingElapsedMs = [long]$sample["elapsed_ms"]
+                }
                 $script:LatestTiming = $sample
                 if ($sample.ContainsKey("pacman_state")) {
                     $script:LatestGameState = $sample["pacman_state"]
                 }
+            } elseif ($line -match 'PacMan stage timing') {
+                $sample = @{}
+                foreach ($field in [regex]::Matches($line, '(?<name>[a-z0-9_]+)=(?<value>[A-Za-z0-9,._-]+)')) {
+                    $sample[$field.Groups["name"].Value] = $field.Groups["value"].Value
+                }
+                $script:LatestStageTiming = $sample
             }
             if ($line -match 'PacMan (?<ghost>Red|Pink|Cyan|Orange) state x=(?<x>-?\d+) y=(?<y>-?\d+)') {
                 $ghostSample = @{}
@@ -334,6 +405,9 @@ function Get-SerialText {
                 $name = $Matches.ghost
                 $position = "{0},{1}" -f $ghostSample["x"], $ghostSample["y"]
                 $movementExpected = $ghostSample["movement_expected"] -eq "1"
+                if ($movementExpected -and [long]$ghostSample["progress_age_ms"] -lt 5000) {
+                    $script:GhostMovementEvidence[$name] = $true
+                }
                 if ($script:PreviousGhostObservations.ContainsKey($name)) {
                     $previousGhost = $script:PreviousGhostObservations[$name]
                     if ($movementExpected -and $previousGhost.MovementExpected -and
@@ -396,11 +470,16 @@ function Get-SerialText {
             $script:SerialTail = $script:SerialTail.Substring($script:SerialTail.Length - 1048576)
         }
         if ($eventLines.Count -gt 0) {
-            Add-Content -LiteralPath $GameEventsPath -Value $eventLines.ToArray()
+            try {
+                Add-Content -LiteralPath $GameEventsPath -Value $eventLines.ToArray()
+            } catch {
+                Write-Validation "event_archive.append_retry reason=$($_.Exception.Message)"
+            }
         }
     } catch {
-        Write-Validation "serial.read.error=$($_.Exception.Message)"
-        throw
+        Write-Validation "serial.read.retry position=$script:SerialReadPosition reason=$($_.Exception.Message)"
+    } finally {
+        if ($reader) { $reader.Dispose() }
     }
 }
 
@@ -416,7 +495,13 @@ function Wait-ForSerial([string]$Needle, [int]$TimeoutSeconds) {
 }
 
 function Send-GuestKey([string]$Key, [int]$HoldMs = 160) {
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $script:LastQmpConnectMs = 0.0
+    $script:LastQmpCapabilitiesMs = 0.0
+    $script:LastQmpSendkeyMs = 0.0
     [void](Send-Qmp ("sendkey {0} {1}" -f $Key, $HoldMs))
+    $watch.Stop()
+    $script:LastQmpApiLatencyMs = $watch.Elapsed.TotalMilliseconds
 }
 
 function Wait-InputAction([string]$Action, [string]$Direction,
@@ -452,6 +537,17 @@ function Send-ObservedDirection([string]$Key, [int]$HoldMs) {
     $sendUtc = [DateTime]::UtcNow
     $deliveryWatch = [System.Diagnostics.Stopwatch]::StartNew()
     Send-GuestKey $Key $HoldMs
+    $qmpApiLatency = [double]$script:LastQmpApiLatencyMs
+    $script:QmpApiLatencies.Add($qmpApiLatency)
+    $qmpConnectLatency = [double]$script:LastQmpConnectMs
+    $qmpCapabilitiesLatency = [double]$script:LastQmpCapabilitiesMs
+    $qmpSendkeyLatency = [double]$script:LastQmpSendkeyMs
+    $qmpClientOverheadLatency = [Math]::Max(0.0,
+        $qmpApiLatency - $qmpConnectLatency - $qmpCapabilitiesLatency - $qmpSendkeyLatency)
+    $script:QmpConnectLatencies.Add($qmpConnectLatency)
+    $script:QmpCapabilitiesLatencies.Add($qmpCapabilitiesLatency)
+    $script:QmpSendkeyLatencies.Add($qmpSendkeyLatency)
+    $script:QmpWrapperLatencies.Add($qmpClientOverheadLatency)
     $down = Wait-InputAction "down" $direction $beforeDown 12
     $deliveryWatch.Stop()
     if (!$down) {
@@ -461,8 +557,19 @@ function Send-ObservedDirection([string]$Key, [int]$HoldMs) {
             hold_ms = $HoldMs
             down_event = "missing"
             up_event = "unknown"
-            delivery_ms = ""
+            qmp_api_round_trip_ms = [Math]::Round($qmpApiLatency, 3)
+            qmp_connect_ms = [Math]::Round($qmpConnectLatency, 3)
+            qmp_capabilities_ms = [Math]::Round($qmpCapabilitiesLatency, 3)
+            qmp_sendkey_command_ms = [Math]::Round($qmpSendkeyLatency, 3)
+            qmp_host_wrapper_ms = [Math]::Round($qmpClientOverheadLatency, 3)
+            host_input_to_guest_log_observation_ms = ""
+            post_qmp_to_guest_log_observation_ms = ""
             guest_tick_ms = ""
+            guest_down_tick_ms = ""
+            guest_up_tick_ms = ""
+            guest_key_held_ms = ""
+            guest_down_log_observed_utc = ""
+            guest_up_log_observed_utc = ""
             result = "FAIL"
         })
         ++$script:InputDeliveryFailures
@@ -474,23 +581,39 @@ function Send-ObservedDirection([string]$Key, [int]$HoldMs) {
         return
     }
     $latency = $deliveryWatch.Elapsed.TotalMilliseconds
+    $postQmpObservationLatency = [Math]::Max(0.0, $latency - $qmpApiLatency)
     $script:InputLatencies.Add($latency)
+    $script:PostQmpObservationLatencies.Add($postQmpObservationLatency)
     $upTimeout = [Math]::Max(12, [int][Math]::Ceiling($HoldMs / 1000.0) + 10)
     $up = Wait-InputAction "up" $direction $beforeUp $upTimeout
+    $guestHeldLatency = if ($up) { [double]([long]$up.TickMs - [long]$down.TickMs) } else { $null }
+    if ($up) { $script:GuestHeldLatencies.Add($guestHeldLatency) }
     $record = [pscustomobject]@{
         sent_utc = $sendUtc.ToString("o")
         qmp_key = $Key
         hold_ms = $HoldMs
         down_event = $down.Sequence
         up_event = if ($up) { $up.Sequence } else { "missing" }
-        delivery_ms = [Math]::Round($latency, 3)
+        qmp_api_round_trip_ms = [Math]::Round($qmpApiLatency, 3)
+        qmp_connect_ms = [Math]::Round($qmpConnectLatency, 3)
+        qmp_capabilities_ms = [Math]::Round($qmpCapabilitiesLatency, 3)
+        qmp_sendkey_command_ms = [Math]::Round($qmpSendkeyLatency, 3)
+        qmp_host_wrapper_ms = [Math]::Round($qmpClientOverheadLatency, 3)
+        host_input_to_guest_log_observation_ms = [Math]::Round($latency, 3)
+        post_qmp_to_guest_log_observation_ms = [Math]::Round($postQmpObservationLatency, 3)
         guest_tick_ms = $down.TickMs
+        guest_down_tick_ms = $down.TickMs
+        guest_up_tick_ms = if ($up) { $up.TickMs } else { "" }
+        guest_key_held_ms = if ($up) { $guestHeldLatency } else { "" }
+        guest_down_log_observed_utc = $down.ObservedHostUtc
+        guest_up_log_observed_utc = if ($up) { $up.ObservedHostUtc } else { "" }
         result = if ($up) { "PASS" } else { "DOWN_ONLY" }
     }
     Write-CsvRecord $InputCsvPath $record
     $upSeq = if ($up) { $up.Sequence } else { "missing" }
-    Write-Validation ("input.sent key={0} hold_ms={1} event={2}/{3} delivery_ms={4:N3}" -f
-        $Key, $HoldMs, $down.Sequence, $upSeq, $latency)
+    Write-Validation ("input.sent key={0} hold_ms={1} event={2}/{3} qmp_api_ms={4:N3} host_to_guest_log_observed_ms={5:N3} post_qmp_observation_ms={6:N3} guest_held_ms={7}" -f
+        $Key, $HoldMs, $down.Sequence, $upSeq, $qmpApiLatency, $latency,
+        $postQmpObservationLatency, $guestHeldLatency)
     if (!$up) {
         ++$script:InputDeliveryFailures
         ++$script:ConsecutiveInputDeliveryFailures
@@ -573,9 +696,30 @@ function Add-HostHealthSample([double]$ElapsedSeconds, [bool]$Final = $false) {
         pacman_state = $script:LatestTiming["pacman_state"]
         frame_sequence = $script:LatestTiming["frame_seq"]
         guest_fps = if ($script:LatestTiming.ContainsKey("fps_milli")) { [Math]::Round([double]$script:LatestTiming["fps_milli"] / 1000.0, 3) } else { "" }
+        host_frame_calls_fps = $script:LatestTiming["host_frame_calls_fps"]
+        guest_clock_pct_host_wall = $script:LatestTiming["guest_clock_pct_host_wall"]
+        timing_observation_span_s = $script:LatestTiming["timing_observation_span_s"]
         frame_avg_us = $script:LatestTiming["frame_avg_us"]
         frame_p95_ms = $script:LatestTiming["frame_p95_ms"]
         frame_p99_ms = $script:LatestTiming["frame_p99_ms"]
+        frame_interval_avg_ms = $script:LatestTiming["frame_interval_avg_ms"]
+        frame_interval_p95_ms = $script:LatestTiming["frame_interval_p95_ms"]
+        frame_interval_p99_ms = $script:LatestTiming["frame_interval_p99_ms"]
+        compose_avg_ms = $script:LatestStageTiming["compose_avg_ms"]
+        compose_p95_ms = $script:LatestStageTiming["compose_p95_ms"]
+        compose_p99_ms = $script:LatestStageTiming["compose_p99_ms"]
+        present_avg_ms = $script:LatestStageTiming["present_avg_ms"]
+        present_p95_ms = $script:LatestStageTiming["present_p95_ms"]
+        present_p99_ms = $script:LatestStageTiming["present_p99_ms"]
+        update_avg_ms = $script:LatestStageTiming["update_avg_ms"]
+        update_p95_ms = $script:LatestStageTiming["update_p95_ms"]
+        update_p99_ms = $script:LatestStageTiming["update_p99_ms"]
+        direction_call_avg_ms = $script:LatestStageTiming["direction_call_avg_ms"]
+        direction_call_p95_ms = $script:LatestStageTiming["direction_call_p95_ms"]
+        direction_call_p99_ms = $script:LatestStageTiming["direction_call_p99_ms"]
+        turn_to_present_count = $script:LatestStageTiming["turn_to_present_count"]
+        turn_to_present_avg_ms = $script:LatestStageTiming["turn_to_present_avg_ms"]
+        turn_to_present_max_ms = $script:LatestStageTiming["turn_to_present_max_ms"]
         sim_backlog_ms = $script:LatestTiming["backlog_ms"]
         sim_max_backlog_ms = $script:LatestTiming["max_backlog_ms"]
         sim_dropped_ms = $script:LatestTiming["dropped_ms"]
@@ -585,6 +729,11 @@ function Add-HostHealthSample([double]$ElapsedSeconds, [bool]$Final = $false) {
         accepted_turns = $script:LatestTiming["turn_accepts"]
         turn_latency_avg_ms = $script:LatestTiming["turn_latency_avg_ms"]
         turn_latency_max_ms = $script:LatestTiming["turn_latency_max_ms"]
+        turn_latency_window_count = $script:LatestTiming["turn_latency_window_count"]
+        turn_latency_window_avg_ms = if ($script:LatestTiming.ContainsKey("turn_latency_window_count") -and
+            [long]$script:LatestTiming["turn_latency_window_count"] -gt 0) { $script:LatestTiming["turn_latency_window_avg_ms"] } else { "" }
+        turn_latency_window_max_ms = if ($script:LatestTiming.ContainsKey("turn_latency_window_count") -and
+            [long]$script:LatestTiming["turn_latency_window_count"] -gt 0) { $script:LatestTiming["turn_latency_window_max_ms"] } else { "" }
         blocked_turns = $script:LatestTiming["blocked_turns"]
         pacman_x_y = $script:LatestTiming["pacman"]
         held_direction_mask = $script:LatestTiming["held_mask"]
@@ -598,9 +747,12 @@ function Add-HostHealthSample([double]$ElapsedSeconds, [bool]$Final = $false) {
     }
     Write-CsvRecord $MetricsCsvPath $sample
     $sample | ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $LogDir "health-samples.jsonl") -Encoding utf8
-    Write-Validation ("health elapsed_s={0:N1} sim_ms={1} steps={2} state={3} fps={4} frame_avg_us={5} p95={6} p99={7} backlog_ms={8} dropped_ms={9} cpu_pct_2vcpu={10:N2} ws_mb={11} private_mb={12} free_gb={13}" -f
+    Write-Validation ("health elapsed_s={0:N1} sim_ms={1} steps={2} state={3} frame_calls_fps={4} frame_avg_us={5} frame_cost_p95_ms={6} frame_cost_p99_ms={7} frame_interval_avg_ms={8} frame_interval_p95_ms={9} frame_interval_p99_ms={10} compose_avg_ms={11} present_avg_ms={12} update_avg_ms={13} direction_call_avg_ms={14} turn_to_present_avg_ms={15} backlog_ms={16} dropped_ms={17} cpu_pct_2vcpu={18:N2} ws_mb={19} private_mb={20} free_gb={21}" -f
         $ElapsedSeconds, $sample.simulation_ms, $sample.simulation_steps, $sample.pacman_state,
         $sample.guest_fps, $sample.frame_avg_us, $sample.frame_p95_ms, $sample.frame_p99_ms,
+        $sample.frame_interval_avg_ms, $sample.frame_interval_p95_ms, $sample.frame_interval_p99_ms,
+        $sample.compose_avg_ms, $sample.present_avg_ms, $sample.update_avg_ms,
+        $sample.direction_call_avg_ms, $sample.turn_to_present_avg_ms,
         $sample.sim_backlog_ms, $sample.sim_dropped_ms, $cpuPercent,
         $sample.qemu_working_set_mb, $sample.qemu_private_mb, $sample.host_free_memory_gb)
     if ($freeBytes -lt 2GB) {
@@ -623,8 +775,24 @@ function Get-LatencyPercentile([int]$Percentile) {
     return [Math]::Round([double]$sorted[$rank], 3)
 }
 
+function Get-LatencySummary([System.Collections.Generic.List[double]]$Values) {
+    if ($Values.Count -eq 0) {
+        return [ordered]@{ count = 0; average = $null; p95 = $null; p99 = $null; max = $null }
+    }
+    $sorted = @($Values | Sort-Object)
+    return [ordered]@{
+        count = $sorted.Count
+        average = [Math]::Round(($Values | Measure-Object -Average).Average, 3)
+        p95 = [Math]::Round([double]$sorted[[Math]::Max(0, [Math]::Ceiling(0.95 * $sorted.Count) - 1)], 3)
+        p99 = [Math]::Round([double]$sorted[[Math]::Max(0, [Math]::Ceiling(0.99 * $sorted.Count) - 1)], 3)
+        max = [Math]::Round([double]$sorted[-1], 3)
+    }
+}
+
 function Get-WindowAverage([object[]]$Samples, [string]$Property) {
-    $values = @($Samples | Where-Object { $_.$Property -ne "" } | ForEach-Object { [double]$_.$Property })
+    $values = @($Samples | Where-Object {
+        ![string]::IsNullOrWhiteSpace([string]($_.$Property))
+    } | ForEach-Object { [double]$_.$Property })
     if ($values.Count -eq 0) { return $null }
     return [Math]::Round(($values | Measure-Object -Average).Average, 3)
 }
@@ -908,7 +1076,7 @@ function Start-IsolatedGuest([string]$PackagePath) {
         pid = $null
     })
     Write-Validation "qemu.start name=$vmName qmp=127.0.0.1:$script:QmpPort ram_mb=$MemoryMB vcpus=$Vcpus acceleration=$Acceleration"
-    $script:QemuProcess = Start-Process -FilePath $QemuPath -ArgumentList $argumentString -WorkingDirectory (Split-Path -Parent $QemuPath) -RedirectStandardOutput $QemuStdoutPath -RedirectStandardError $QemuStderrPath -PassThru
+    $script:QemuProcess = Start-Process -FilePath $QemuPath -ArgumentList $argumentString -WorkingDirectory (Split-Path -Parent $QemuPath) -RedirectStandardOutput $QemuStdoutPath -RedirectStandardError $QemuStderrPath -WindowStyle Hidden -PassThru
     $script:ProcessStartUtc = [DateTime]::UtcNow
     try { $script:QemuProcess.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
     $processRecord = Get-Content -LiteralPath $ProcessPath -Raw | ConvertFrom-Json
@@ -936,8 +1104,7 @@ function Start-IsolatedGuest([string]$PackagePath) {
         Start-Sleep -Milliseconds 100
     }
     Assert-File $SerialPath "QEMU serial output"
-    $script:SerialReader = [System.IO.File]::Open($SerialPath, [System.IO.FileMode]::Open,
-        [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $script:SerialReadPosition = 0L
 
     if (!(Wait-ForSerial "[KERNEL] Entering main loop" $StartupTimeoutSeconds)) {
         throw "The copied guideXOS guest did not reach its interactive main loop."
@@ -963,7 +1130,7 @@ function Start-IsolatedGuest([string]$PackagePath) {
             throw "Missing real-guest launch evidence: $needle"
         }
     }
-    Write-Validation "guest.launch.PASS shortcut=F12 manifest=discovered elf=loaded resources=loaded frame=presented execution=bare-metal-UEFI"
+    Write-Validation "guest.launch.PASS shortcut=F12 manifest=discovered elf=loaded resources=loaded frame=presented execution=QEMU-UEFI-virtualized"
     [void](Capture-Screenshot "game-start")
     if (!(Wait-ForSerial "PacMan gameplay resumed" 20)) {
         Write-Validation "guest.gameplay_resume=not-observed-within-20s; directional input starts session"
@@ -1081,7 +1248,7 @@ function Write-RunSummary {
             $script:RegressionResults.Count -eq 3 -and $script:KeyboardEvidence -and
             $script:LegalTurnEvidence -and $script:PacmanMovementEvidence -and
             (@($script:GhostMovementEvidence.Values | Where-Object { $_ }).Count -eq 4) -and
-            $script:FaultCount -eq 0 -and $script:InputDeliveryFailures -eq 0) { "A" } else { "B" }
+            $script:FaultCount -eq 0 -and $script:InputDeliveryFailures -eq 0) { "QEMU_PASS" } else { "QEMU_PARTIAL" }
         result = $script:RunResult
         error = $script:RunError
         run_id = $RunId
@@ -1094,21 +1261,41 @@ function Write-RunSummary {
         wallclock_gameplay_seconds = $elapsedSeconds
         minimum_acceptance_seconds = 900
         requested_duration_minutes = $DurationMinutes
-        guest_model = "guideXOS UEFI bare-metal guest in private QEMU"
+        validation_environment = "Isolated QEMU x86-64 UEFI guest; virtualized result only, not physical bare-metal qualification."
+        guest_model = "guideXOS x86-64 UEFI guest in private QEMU"
         pacman_package = "Normal Native ELF gameplay, diagnostics ON, every gameplay test hook OFF."
         input_schedule = "24-step deterministic route; taps 180-280 ms with 200-370 ms gaps; four 130 ms rapid turns every 24 inputs; 1.5 s corridor sweeps at route slots 65 and 161; automatic Space restart on Game Over."
+        frame_method = "guest_fps counts render_and_present calls per second of the guest fixed-step clock; host_frame_calls_fps counts frame_seq changes per Stopwatch second between guest timing-log observations. guest_clock_pct_host_wall compares guest elapsed-time deltas with that same host Stopwatch span. Neither rate is monitor refresh or QEMU display output. frame_avg_us times scene composition plus gx_present_frame; compose_*, present_*, update_*, direction_call_*, and turn_to_present_* separately time those guest stages with 1 ms guest ticks; frame_interval_* measures guest-clock call start spacing. A completed present API call is a guest-side response marker, not proof of display scanout."
         input_event_count = $script:InputActionCount
         input_attempt_count = $script:InputAttemptCount
         input_delivery_failures = $script:InputDeliveryFailures
+        input_timing_method = "All host durations use Stopwatch. qmp_api_round_trip_ms covers endpoint ownership checks, a new QMP connection, capability negotiation, sendkey request, and command response. qmp_connect_ms, qmp_capabilities_ms, and qmp_sendkey_command_ms split the socket, negotiation, and HMP command boundaries; qmp_host_wrapper_ms is their nonnegative residual. host_input_to_guest_log_observation_ms ends when the guest key event is read from serial and is an upper bound on actual delivery. post_qmp_to_guest_log_observation_ms isolates the wait after the complete QMP API call. Guest down/up ticks use the guest monotonic clock and are not subtracted from host timestamps."
+        host_input_to_guest_log_observation_ms = [ordered]@{
+            average = if ($script:InputLatencies.Count) { [Math]::Round(($script:InputLatencies | Measure-Object -Average).Average, 3) } else { 0 }
+            p95 = Get-LatencyPercentile 95
+            p99 = Get-LatencyPercentile 99
+        }
+        qmp_api_round_trip_ms = Get-LatencySummary $script:QmpApiLatencies
+        qmp_connect_ms = Get-LatencySummary $script:QmpConnectLatencies
+        qmp_capabilities_ms = Get-LatencySummary $script:QmpCapabilitiesLatencies
+        qmp_sendkey_command_ms = Get-LatencySummary $script:QmpSendkeyLatencies
+        qmp_host_wrapper_ms = Get-LatencySummary $script:QmpWrapperLatencies
+        post_qmp_to_guest_log_observation_ms = Get-LatencySummary $script:PostQmpObservationLatencies
+        guest_key_held_ms = Get-LatencySummary $script:GuestHeldLatencies
         input_down_delivery_ms = [ordered]@{
             average = if ($script:InputLatencies.Count) { [Math]::Round(($script:InputLatencies | Measure-Object -Average).Average, 3) } else { 0 }
             p95 = Get-LatencyPercentile 95
             p99 = Get-LatencyPercentile 99
+            meaning = "Legacy field; identical to the host input-to-guest serial-log observation upper bound above."
         }
         turns = [ordered]@{
             accepted = $script:LatestTiming["turn_accepts"]
             average_guest_request_to_legal_acceptance_ms = $script:LatestTiming["turn_latency_avg_ms"]
             max_guest_request_to_legal_acceptance_ms = $script:LatestTiming["turn_latency_max_ms"]
+            latest_window_count = $script:LatestTiming["turn_latency_window_count"]
+            latest_window_average_guest_request_to_legal_acceptance_ms = $script:LatestTiming["turn_latency_window_avg_ms"]
+            latest_window_max_guest_request_to_legal_acceptance_ms = $script:LatestTiming["turn_latency_window_max_ms"]
+            latency_scope = "Guest event-loop request tick to a later legal simulation turn. The one-minute window metrics capture accepted requests in that window; only the latest pending direction is timed when repeated key-down events replace the buffer."
             blocked_by_wall = $script:LatestTiming["blocked_turns"]
             held_direction_mask = $script:LatestTiming["held_mask"]
         }
@@ -1131,7 +1318,7 @@ function Write-RunSummary {
             directional_key_delivery_observed = $script:KeyboardEvidence
             legal_turn_acceptance_observed = $script:LegalTurnEvidence
             pacman_movement_between_health_samples_observed = $script:PacmanMovementEvidence
-            ghosts_moving_between_health_samples = $script:GhostMovementEvidence
+            ghosts_with_recent_progress_while_movement_expected = $script:GhostMovementEvidence
             possible_stall_fault_count = $script:FaultCount
         }
         first_five_minute_averages = [ordered]@{
@@ -1139,9 +1326,32 @@ function Write-RunSummary {
             qemu_working_set_mb = Get-WindowAverage $firstFive "qemu_working_set_mb"
             qemu_private_mb = Get-WindowAverage $firstFive "qemu_private_mb"
             guest_fps = Get-WindowAverage $firstFive "guest_fps"
+            guest_frame_calls_fps = Get-WindowAverage $firstFive "guest_fps"
+            host_frame_calls_fps = Get-WindowAverage $firstFive "host_frame_calls_fps"
+            guest_clock_pct_host_wall = Get-WindowAverage $firstFive "guest_clock_pct_host_wall"
             frame_avg_us = Get-WindowAverage $firstFive "frame_avg_us"
             frame_p95_ms = Get-WindowAverage $firstFive "frame_p95_ms"
             frame_p99_ms = Get-WindowAverage $firstFive "frame_p99_ms"
+            frame_interval_avg_ms = Get-WindowAverage $firstFive "frame_interval_avg_ms"
+            frame_interval_p95_ms = Get-WindowAverage $firstFive "frame_interval_p95_ms"
+            frame_interval_p99_ms = Get-WindowAverage $firstFive "frame_interval_p99_ms"
+            compose_avg_ms = Get-WindowAverage $firstFive "compose_avg_ms"
+            compose_p95_ms = Get-WindowAverage $firstFive "compose_p95_ms"
+            compose_p99_ms = Get-WindowAverage $firstFive "compose_p99_ms"
+            present_avg_ms = Get-WindowAverage $firstFive "present_avg_ms"
+            present_p95_ms = Get-WindowAverage $firstFive "present_p95_ms"
+            present_p99_ms = Get-WindowAverage $firstFive "present_p99_ms"
+            update_avg_ms = Get-WindowAverage $firstFive "update_avg_ms"
+            update_p95_ms = Get-WindowAverage $firstFive "update_p95_ms"
+            update_p99_ms = Get-WindowAverage $firstFive "update_p99_ms"
+            direction_call_avg_ms = Get-WindowAverage $firstFive "direction_call_avg_ms"
+            direction_call_p95_ms = Get-WindowAverage $firstFive "direction_call_p95_ms"
+            direction_call_p99_ms = Get-WindowAverage $firstFive "direction_call_p99_ms"
+            turn_to_present_avg_ms = Get-WindowAverage $firstFive "turn_to_present_avg_ms"
+            turn_to_present_max_ms = Get-WindowAverage $firstFive "turn_to_present_max_ms"
+            turn_latency_window_avg_ms = Get-WindowAverage $firstFive "turn_latency_window_avg_ms"
+            turn_latency_window_max_ms = Get-WindowAverage $firstFive "turn_latency_window_max_ms"
+            turn_latency_window_count = Get-WindowAverage $firstFive "turn_latency_window_count"
             sim_dropped_ms = Get-WindowAverage $firstFive "sim_dropped_ms"
         }
         final_five_minute_averages = [ordered]@{
@@ -1149,9 +1359,32 @@ function Write-RunSummary {
             qemu_working_set_mb = Get-WindowAverage $lastFive "qemu_working_set_mb"
             qemu_private_mb = Get-WindowAverage $lastFive "qemu_private_mb"
             guest_fps = Get-WindowAverage $lastFive "guest_fps"
+            guest_frame_calls_fps = Get-WindowAverage $lastFive "guest_fps"
+            host_frame_calls_fps = Get-WindowAverage $lastFive "host_frame_calls_fps"
+            guest_clock_pct_host_wall = Get-WindowAverage $lastFive "guest_clock_pct_host_wall"
             frame_avg_us = Get-WindowAverage $lastFive "frame_avg_us"
             frame_p95_ms = Get-WindowAverage $lastFive "frame_p95_ms"
             frame_p99_ms = Get-WindowAverage $lastFive "frame_p99_ms"
+            frame_interval_avg_ms = Get-WindowAverage $lastFive "frame_interval_avg_ms"
+            frame_interval_p95_ms = Get-WindowAverage $lastFive "frame_interval_p95_ms"
+            frame_interval_p99_ms = Get-WindowAverage $lastFive "frame_interval_p99_ms"
+            compose_avg_ms = Get-WindowAverage $lastFive "compose_avg_ms"
+            compose_p95_ms = Get-WindowAverage $lastFive "compose_p95_ms"
+            compose_p99_ms = Get-WindowAverage $lastFive "compose_p99_ms"
+            present_avg_ms = Get-WindowAverage $lastFive "present_avg_ms"
+            present_p95_ms = Get-WindowAverage $lastFive "present_p95_ms"
+            present_p99_ms = Get-WindowAverage $lastFive "present_p99_ms"
+            update_avg_ms = Get-WindowAverage $lastFive "update_avg_ms"
+            update_p95_ms = Get-WindowAverage $lastFive "update_p95_ms"
+            update_p99_ms = Get-WindowAverage $lastFive "update_p99_ms"
+            direction_call_avg_ms = Get-WindowAverage $lastFive "direction_call_avg_ms"
+            direction_call_p95_ms = Get-WindowAverage $lastFive "direction_call_p95_ms"
+            direction_call_p99_ms = Get-WindowAverage $lastFive "direction_call_p99_ms"
+            turn_to_present_avg_ms = Get-WindowAverage $lastFive "turn_to_present_avg_ms"
+            turn_to_present_max_ms = Get-WindowAverage $lastFive "turn_to_present_max_ms"
+            turn_latency_window_avg_ms = Get-WindowAverage $lastFive "turn_latency_window_avg_ms"
+            turn_latency_window_max_ms = Get-WindowAverage $lastFive "turn_latency_window_max_ms"
+            turn_latency_window_count = Get-WindowAverage $lastFive "turn_latency_window_count"
             sim_dropped_ms = Get-WindowAverage $lastFive "sim_dropped_ms"
         }
         artifacts = [ordered]@{
@@ -1191,10 +1424,7 @@ try {
     throw
 } finally {
     Stop-OwnedQemu
-    if ($script:SerialReader) {
-        $script:SerialReader.Dispose()
-        $script:SerialReader = $null
-    }
+    $script:SerialReader = $null
     if (Test-Path -LiteralPath $RunDir) {
         try { Write-RunSummary } catch { Write-Validation "summary.error=$($_.Exception.Message)" }
     }

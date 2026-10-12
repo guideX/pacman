@@ -73,6 +73,9 @@ static uint64_t g_turnAcceptedEvents = 0;
 static uint64_t g_blockedDirectionEvents = 0;
 static uint64_t g_turnAcceptanceLatencyTotalMs = 0;
 static uint64_t g_turnAcceptanceLatencyMaxMs = 0;
+static uint64_t g_turnLatencyWindowTotalMs = 0;
+static uint64_t g_turnLatencyWindowMaxMs = 0;
+static uint64_t g_turnLatencyWindowCount = 0;
 static uint64_t g_pendingTurnTickMs = 0;
 static bool g_pendingTurnRequest = false;
 static uint64_t g_actorLastProgressTicksMs[5] = {};
@@ -81,6 +84,28 @@ static int g_actorLastY[5] = {};
 static uint64_t g_frameDurationSamples = 0;
 static uint64_t g_frameDurationTotalMs = 0;
 static uint64_t g_frameDurationBuckets[129] = {};
+static uint64_t g_frameIntervalSamples = 0;
+static uint64_t g_frameIntervalTotalMs = 0;
+static uint64_t g_frameIntervalBuckets[513] = {};
+static uint64_t g_lastFrameStartMs = 0;
+static bool g_hasFrameStart = false;
+static uint64_t g_composeSamples = 0;
+static uint64_t g_composeTotalMs = 0;
+static uint64_t g_composeBuckets[129] = {};
+static uint64_t g_presentSamples = 0;
+static uint64_t g_presentTotalMs = 0;
+static uint64_t g_presentBuckets[129] = {};
+static uint64_t g_updateSamples = 0;
+static uint64_t g_updateTotalMs = 0;
+static uint64_t g_updateBuckets[129] = {};
+static uint64_t g_directionCallSamples = 0;
+static uint64_t g_directionCallTotalMs = 0;
+static uint64_t g_directionCallBuckets[129] = {};
+static uint64_t g_turnToPresentCount = 0;
+static uint64_t g_turnToPresentTotalMs = 0;
+static uint64_t g_turnToPresentMaxMs = 0;
+static uint64_t g_turnToPresentStartMs = 0;
+static bool g_turnToPresentPending = false;
 static uint64_t g_lastHealthSampleMs = 0;
 static uint64_t g_lastHealthFrameSequence = 0;
 
@@ -205,6 +230,29 @@ static uint64_t diagnostic_frame_percentile_ms(uint32_t percentile) {
     return 128u;
 }
 
+static uint64_t diagnostic_frame_interval_percentile_ms(uint32_t percentile) {
+    if (g_frameIntervalSamples == 0u) return 0u;
+    const uint64_t rank = (g_frameIntervalSamples * percentile + 99u) / 100u;
+    uint64_t cumulative = 0;
+    for (uint32_t bucket = 0; bucket < 513u; ++bucket) {
+        cumulative += g_frameIntervalBuckets[bucket];
+        if (cumulative >= rank) return bucket;
+    }
+    return 512u;
+}
+
+static void record_diagnostic_frame_interval(uint64_t frameStartMs) {
+    if (g_hasFrameStart) {
+        const uint64_t intervalMs = frameStartMs - g_lastFrameStartMs;
+        const uint32_t bucket = intervalMs >= 512u ? 512u : static_cast<uint32_t>(intervalMs);
+        ++g_frameIntervalSamples;
+        g_frameIntervalTotalMs += intervalMs;
+        ++g_frameIntervalBuckets[bucket];
+    }
+    g_lastFrameStartMs = frameStartMs;
+    g_hasFrameStart = true;
+}
+
 static void record_diagnostic_frame_duration(uint64_t startMs, uint64_t finishMs) {
     const uint64_t durationMs = finishMs - startMs;
     const uint32_t bucket = durationMs >= 128u ? 128u : static_cast<uint32_t>(durationMs);
@@ -213,10 +261,87 @@ static void record_diagnostic_frame_duration(uint64_t startMs, uint64_t finishMs
     ++g_frameDurationBuckets[bucket];
 }
 
+static void record_diagnostic_duration(uint64_t durationMs, uint64_t& samples,
+                                       uint64_t& totalMs, uint64_t* buckets,
+                                       uint32_t maximumBucket) {
+    const uint32_t bucket = durationMs >= maximumBucket
+        ? maximumBucket : static_cast<uint32_t>(durationMs);
+    ++samples;
+    totalMs += durationMs;
+    ++buckets[bucket];
+}
+
+static uint64_t diagnostic_duration_percentile_ms(const uint64_t* buckets,
+                                                 uint32_t maximumBucket,
+                                                 uint64_t samples,
+                                                 uint32_t percentile) {
+    if (samples == 0u) return 0u;
+    const uint64_t rank = (samples * percentile + 99u) / 100u;
+    uint64_t cumulative = 0;
+    for (uint32_t bucket = 0; bucket <= maximumBucket; ++bucket) {
+        cumulative += buckets[bucket];
+        if (cumulative >= rank) return bucket;
+    }
+    return maximumBucket;
+}
+
+static void log_stage_timing_sample(gx_app_context* ctx) {
+    if (!ctx || !ctx->host || !ctx->host->log) return;
+    char message[512];
+    uint32_t index = 0;
+    append_timing_text(message, &index, sizeof(message), "PacMan stage timing compose_avg_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        g_composeSamples == 0u ? 0u : g_composeTotalMs / g_composeSamples);
+    append_timing_text(message, &index, sizeof(message), " compose_p95_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        diagnostic_duration_percentile_ms(g_composeBuckets, 128u, g_composeSamples, 95u));
+    append_timing_text(message, &index, sizeof(message), " compose_p99_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        diagnostic_duration_percentile_ms(g_composeBuckets, 128u, g_composeSamples, 99u));
+    append_timing_text(message, &index, sizeof(message), " present_avg_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        g_presentSamples == 0u ? 0u : g_presentTotalMs / g_presentSamples);
+    append_timing_text(message, &index, sizeof(message), " present_p95_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        diagnostic_duration_percentile_ms(g_presentBuckets, 128u, g_presentSamples, 95u));
+    append_timing_text(message, &index, sizeof(message), " present_p99_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        diagnostic_duration_percentile_ms(g_presentBuckets, 128u, g_presentSamples, 99u));
+    append_timing_text(message, &index, sizeof(message), " update_avg_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        g_updateSamples == 0u ? 0u : g_updateTotalMs / g_updateSamples);
+    append_timing_text(message, &index, sizeof(message), " update_p95_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        diagnostic_duration_percentile_ms(g_updateBuckets, 128u, g_updateSamples, 95u));
+    append_timing_text(message, &index, sizeof(message), " update_p99_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        diagnostic_duration_percentile_ms(g_updateBuckets, 128u, g_updateSamples, 99u));
+    append_timing_text(message, &index, sizeof(message), " direction_call_avg_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        g_directionCallSamples == 0u ? 0u : g_directionCallTotalMs / g_directionCallSamples);
+    append_timing_text(message, &index, sizeof(message), " direction_call_p95_ms=");
+    append_timing_number(message, &index, sizeof(message), diagnostic_duration_percentile_ms(
+        g_directionCallBuckets, 128u, g_directionCallSamples, 95u));
+    append_timing_text(message, &index, sizeof(message), " direction_call_p99_ms=");
+    append_timing_number(message, &index, sizeof(message), diagnostic_duration_percentile_ms(
+        g_directionCallBuckets, 128u, g_directionCallSamples, 99u));
+    append_timing_text(message, &index, sizeof(message), " turn_to_present_count=");
+    append_timing_number(message, &index, sizeof(message), g_turnToPresentCount);
+    append_timing_text(message, &index, sizeof(message), " turn_to_present_avg_ms=");
+    append_timing_number(message, &index, sizeof(message), g_turnToPresentCount == 0u ? 0u :
+        g_turnToPresentTotalMs / g_turnToPresentCount);
+    append_timing_text(message, &index, sizeof(message), " turn_to_present_max_ms=");
+    append_timing_number(message, &index, sizeof(message), g_turnToPresentMaxMs);
+    message[index] = '\0';
+    ctx->host->log(ctx, message);
+}
+
 static void log_timing_sample(gx_app_context* ctx, const GameState& game,
                               const PacManFixedStepClock& clock, uint64_t nowMs) {
     if (!ctx || !ctx->host || !ctx->host->log) return;
-    char message[640];
+    // Keep the complete diagnostics line available as counters grow during a
+    // long soak; a shorter buffer could cut off dropped-time fields.
+    char message[1024];
     uint32_t index = 0;
     append_timing_text(message, &index, sizeof(message), "PacMan timing elapsed_ms=");
     append_timing_number(message, &index, sizeof(message), clock.totalElapsedMs);
@@ -241,6 +366,15 @@ static void log_timing_sample(gx_app_context* ctx, const GameState& game,
     append_timing_number(message, &index, sizeof(message), diagnostic_frame_percentile_ms(99u));
     append_timing_text(message, &index, sizeof(message), " frame_samples=");
     append_timing_number(message, &index, sizeof(message), g_frameDurationSamples);
+    append_timing_text(message, &index, sizeof(message), " frame_interval_avg_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        g_frameIntervalSamples == 0u ? 0u : g_frameIntervalTotalMs / g_frameIntervalSamples);
+    append_timing_text(message, &index, sizeof(message), " frame_interval_p95_ms=");
+    append_timing_number(message, &index, sizeof(message), diagnostic_frame_interval_percentile_ms(95u));
+    append_timing_text(message, &index, sizeof(message), " frame_interval_p99_ms=");
+    append_timing_number(message, &index, sizeof(message), diagnostic_frame_interval_percentile_ms(99u));
+    append_timing_text(message, &index, sizeof(message), " frame_interval_samples=");
+    append_timing_number(message, &index, sizeof(message), g_frameIntervalSamples);
     append_timing_text(message, &index, sizeof(message), " pacman_state=");
     append_timing_text(message, &index, sizeof(message), diagnostic_play_state_name(game.playState));
     append_timing_text(message, &index, sizeof(message), " pacman=");
@@ -266,6 +400,13 @@ static void log_timing_sample(gx_app_context* ctx, const GameState& game,
         g_turnAcceptedEvents == 0u ? 0u : g_turnAcceptanceLatencyTotalMs / g_turnAcceptedEvents);
     append_timing_text(message, &index, sizeof(message), " turn_latency_max_ms=");
     append_timing_number(message, &index, sizeof(message), g_turnAcceptanceLatencyMaxMs);
+    append_timing_text(message, &index, sizeof(message), " turn_latency_window_count=");
+    append_timing_number(message, &index, sizeof(message), g_turnLatencyWindowCount);
+    append_timing_text(message, &index, sizeof(message), " turn_latency_window_avg_ms=");
+    append_timing_number(message, &index, sizeof(message),
+        g_turnLatencyWindowCount == 0u ? 0u : g_turnLatencyWindowTotalMs / g_turnLatencyWindowCount);
+    append_timing_text(message, &index, sizeof(message), " turn_latency_window_max_ms=");
+    append_timing_number(message, &index, sizeof(message), g_turnLatencyWindowMaxMs);
     append_timing_text(message, &index, sizeof(message), " blocked_turns=");
     append_timing_number(message, &index, sizeof(message), g_blockedDirectionEvents);
     append_timing_text(message, &index, sizeof(message), " sim_steps=");
@@ -284,11 +425,33 @@ static void log_timing_sample(gx_app_context* ctx, const GameState& game,
     append_timing_number(message, &index, sizeof(message), game.levelNumber);
     message[index] = '\0';
     ctx->host->log(ctx, message);
+    log_stage_timing_sample(ctx);
     g_lastHealthSampleMs = clock.totalElapsedMs;
     g_lastHealthFrameSequence = g_frameSequence;
     g_frameDurationSamples = 0;
     g_frameDurationTotalMs = 0;
     for (uint32_t bucket = 0; bucket < 129u; ++bucket) g_frameDurationBuckets[bucket] = 0;
+    g_frameIntervalSamples = 0;
+    g_frameIntervalTotalMs = 0;
+    for (uint32_t bucket = 0; bucket < 513u; ++bucket) g_frameIntervalBuckets[bucket] = 0;
+    g_turnLatencyWindowTotalMs = 0;
+    g_turnLatencyWindowMaxMs = 0;
+    g_turnLatencyWindowCount = 0;
+    g_composeSamples = 0;
+    g_composeTotalMs = 0;
+    for (uint32_t bucket = 0; bucket < 129u; ++bucket) g_composeBuckets[bucket] = 0;
+    g_presentSamples = 0;
+    g_presentTotalMs = 0;
+    for (uint32_t bucket = 0; bucket < 129u; ++bucket) g_presentBuckets[bucket] = 0;
+    g_updateSamples = 0;
+    g_updateTotalMs = 0;
+    for (uint32_t bucket = 0; bucket < 129u; ++bucket) g_updateBuckets[bucket] = 0;
+    g_directionCallSamples = 0;
+    g_directionCallTotalMs = 0;
+    for (uint32_t bucket = 0; bucket < 129u; ++bucket) g_directionCallBuckets[bucket] = 0;
+    g_turnToPresentCount = 0;
+    g_turnToPresentTotalMs = 0;
+    g_turnToPresentMaxMs = 0;
 }
 #endif
 
@@ -464,19 +627,40 @@ static bool render_and_present(gx_app_context* ctx, gx_handle window, const PacI
     const uint64_t frameSequence = ++g_frameSequence;
 #if PACMAN_ENABLE_DIAGNOSTICS
     const uint64_t frameStartMs = gx_get_ticks_ms(ctx);
+    record_diagnostic_frame_interval(frameStartMs);
     const bool traceFrame = g_pacbmFrameMarkers < 3u;
     if (traceFrame) pacbm_marker(ctx, "PACBM 18 NEXT_FRAME_BEGIN");
 #endif
-    if (!render_game_scene(&sprites, &game, g_backgroundPixels, g_framePixels,
-                           kPacManWidth * kPacManFrameHeight, frameSequence)) return false;
+#if PACMAN_ENABLE_DIAGNOSTICS
+    const uint64_t composeStartMs = gx_get_ticks_ms(ctx);
+#endif
+    const bool composed = render_game_scene(&sprites, &game, g_backgroundPixels, g_framePixels,
+                                             kPacManWidth * kPacManFrameHeight, frameSequence);
+#if PACMAN_ENABLE_DIAGNOSTICS
+    const uint64_t composeFinishMs = gx_get_ticks_ms(ctx);
+    record_diagnostic_duration(composeFinishMs - composeStartMs, g_composeSamples,
+                               g_composeTotalMs, g_composeBuckets, 128u);
+#endif
+    if (!composed) return false;
 #if PACMAN_ENABLE_DIAGNOSTICS
     if (frameSequence == 1u) pacbm_marker(ctx, "PACBM 08 FIRST_FRAME_COMPOSED");
     if (frameSequence == 1u) pacbm_marker(ctx, "PACBM 09 FIRST_FRAME_CALL_BEGIN");
+    const uint64_t presentStartMs = gx_get_ticks_ms(ctx);
 #endif
     const gx_result result = present(ctx, window);
 #if PACMAN_ENABLE_DIAGNOSTICS
+    const uint64_t presentFinishMs = gx_get_ticks_ms(ctx);
+    record_diagnostic_duration(presentFinishMs - presentStartMs, g_presentSamples,
+                               g_presentTotalMs, g_presentBuckets, 128u);
+    if (result == GX_OK && g_turnToPresentPending) {
+        const uint64_t turnToPresentMs = presentFinishMs - g_turnToPresentStartMs;
+        ++g_turnToPresentCount;
+        g_turnToPresentTotalMs += turnToPresentMs;
+        if (turnToPresentMs > g_turnToPresentMaxMs) g_turnToPresentMaxMs = turnToPresentMs;
+        g_turnToPresentPending = false;
+    }
     if (frameSequence == 1u) pacbm_marker(ctx, "PACBM 10 FIRST_FRAME_CALL_END");
-    record_diagnostic_frame_duration(frameStartMs, gx_get_ticks_ms(ctx));
+    record_diagnostic_frame_duration(frameStartMs, presentFinishMs);
     if (traceFrame) {
         pacbm_marker(ctx, "PACBM 19 NEXT_FRAME_END");
         ++g_pacbmFrameMarkers;
@@ -1599,14 +1783,26 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
                         g_pendingTurnTickMs = pacbm_get_ticks_ms(ctx);
                         g_pendingTurnRequest = true;
                         log_diagnostic_key_event(ctx, direction, true, g_pendingTurnTickMs);
+                        const uint64_t directionCallStartMs = gx_get_ticks_ms(ctx);
 #endif
                         game_press_direction(&game, direction);
+#if PACMAN_ENABLE_DIAGNOSTICS
+                        record_diagnostic_duration(gx_get_ticks_ms(ctx) - directionCallStartMs,
+                            g_directionCallSamples, g_directionCallTotalMs,
+                            g_directionCallBuckets, 128u);
+#endif
                         log_direction_request(ctx, direction);
                     } else if (event.param2 == GX_KEY_ACTION_UP) {
 #if PACMAN_ENABLE_DIAGNOSTICS
                         log_diagnostic_key_event(ctx, direction, false, pacbm_get_ticks_ms(ctx));
+                        const uint64_t directionCallStartMs = gx_get_ticks_ms(ctx);
 #endif
                         game_release_direction(&game, direction);
+#if PACMAN_ENABLE_DIAGNOSTICS
+                        record_diagnostic_duration(gx_get_ticks_ms(ctx) - directionCallStartMs,
+                            g_directionCallSamples, g_directionCallTotalMs,
+                            g_directionCallBuckets, 128u);
+#endif
                     }
                 }
             }
@@ -1750,9 +1946,13 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
 #if PACMAN_ENABLE_DIAGNOSTICS
             const bool traceUpdate = g_pacbmUpdateMarkers < 5u;
             if (traceUpdate) pacbm_marker(ctx, "PACBM 16 UPDATE_BEGIN");
+            const uint64_t updateStartMs = gx_get_ticks_ms(ctx);
 #endif
             game_update(&game);
 #if PACMAN_ENABLE_DIAGNOSTICS
+            const uint64_t updateFinishMs = gx_get_ticks_ms(ctx);
+            record_diagnostic_duration(updateFinishMs - updateStartMs, g_updateSamples,
+                                       g_updateTotalMs, g_updateBuckets, 128u);
             record_diagnostic_progress(game, currentTicks);
 #endif
             pacman_audio_process_game_events(&audioState, &game, pacman_audio_submit, ctx);
@@ -1771,11 +1971,18 @@ extern "C" gx_result GX_CALL gx_main(gx_app_context* ctx) {
             }
             if (game.turnAccepted) {
                 ++g_turnAcceptedEvents;
+                g_turnToPresentStartMs = updateFinishMs;
+                g_turnToPresentPending = true;
                 if (g_pendingTurnRequest) {
                     const uint64_t latencyMs = currentTicks - g_pendingTurnTickMs;
                     g_turnAcceptanceLatencyTotalMs += latencyMs;
+                    g_turnLatencyWindowTotalMs += latencyMs;
+                    ++g_turnLatencyWindowCount;
                     if (latencyMs > g_turnAcceptanceLatencyMaxMs) {
                         g_turnAcceptanceLatencyMaxMs = latencyMs;
+                    }
+                    if (latencyMs > g_turnLatencyWindowMaxMs) {
+                        g_turnLatencyWindowMaxMs = latencyMs;
                     }
                     g_pendingTurnRequest = false;
                 }

@@ -37,11 +37,24 @@ static void copy_level(const PacImage* level, uint32_t* frame) {
 }
 
 static void pill(uint32_t* frame, int centerX, int centerY, int radius, uint32_t color) {
-    for (int y = -radius; y <= radius; ++y) {
-        for (int x = -radius; x <= radius; ++x) {
-            if (x * x + y * y <= radius * radius) {
-                uint32_t* target = pixel(frame, centerX + x, 32 + centerY + y);
-                if (target) *target = color;
+    if (!frame || radius < 0) return;
+    int firstX = -radius;
+    int lastX = radius + 1;
+    int firstY = -radius;
+    int lastY = radius + 1;
+    if (firstX < -centerX) firstX = -centerX;
+    if (lastX > kPacManWidth - centerX) lastX = kPacManWidth - centerX;
+    if (firstY < -(32 + centerY)) firstY = -(32 + centerY);
+    if (lastY > kPacManFrameHeight - (32 + centerY)) {
+        lastY = kPacManFrameHeight - (32 + centerY);
+    }
+    if (firstX >= lastX || firstY >= lastY) return;
+    const int radiusSquared = radius * radius;
+    for (int y = firstY; y < lastY; ++y) {
+        uint32_t* row = frame + (32 + centerY + y) * kPacManWidth + centerX + firstX;
+        for (int x = firstX; x < lastX; ++x) {
+            if (x * x + y * y <= radiusSquared) {
+                row[x - firstX] = color;
             }
         }
     }
@@ -75,18 +88,47 @@ static void draw_sprite(const PacImage* sprites, uint32_t* frame, int destinatio
                         int sourceX, int sourceY, int maskX) {
     if (!sprites || !sprites->pixels || sprites->width > 0xFFFFFFFFu / 4u ||
         sprites->strideBytes < sprites->width * 4u) return;
+
+    // Clip the sprite and both source/mask rectangles once. The old inner
+    // loop called pixel() for every one of the 1,024 sprite pixels, even when
+    // the sprite was fully inside the frame.
+    int firstX = 0;
+    int lastX = kPacManSpriteSize;
+    const int destinationTop = 32 + destinationY;
+    int firstY = 0;
+    int lastY = kPacManSpriteSize;
+    if (firstX < -destinationX) firstX = -destinationX;
+    if (firstX < -sourceX) firstX = -sourceX;
+    if (firstX < -maskX) firstX = -maskX;
+    if (lastX > kPacManWidth - destinationX) lastX = kPacManWidth - destinationX;
+    if (lastX > static_cast<int>(sprites->width) - sourceX) {
+        lastX = static_cast<int>(sprites->width) - sourceX;
+    }
+    if (lastX > static_cast<int>(sprites->width) - maskX) {
+        lastX = static_cast<int>(sprites->width) - maskX;
+    }
+    if (firstY < -destinationTop) firstY = -destinationTop;
+    if (firstY < -sourceY) firstY = -sourceY;
+    if (lastY > kPacManFrameHeight - destinationTop) {
+        lastY = kPacManFrameHeight - destinationTop;
+    }
+    if (lastY > static_cast<int>(sprites->height) - sourceY) {
+        lastY = static_cast<int>(sprites->height) - sourceY;
+    }
+    if (firstX >= lastX || firstY >= lastY) return;
+
     const uint32_t sourceStride = sprites->strideBytes / 4u;
-    for (int y = 0; y < kPacManSpriteSize; ++y) {
-        for (int x = 0; x < kPacManSpriteSize; ++x) {
-            const int sx = sourceX + x;
-            const int sy = sourceY + y;
-            const int mx = maskX + x;
-            if (sx < 0 || sy < 0 || mx < 0 || sx >= static_cast<int>(sprites->width) ||
-                mx >= static_cast<int>(sprites->width) || sy >= static_cast<int>(sprites->height)) continue;
-            const uint32_t source = sprites->pixels[sy * sourceStride + sx];
-            const uint32_t mask = sprites->pixels[sy * sourceStride + mx];
-            uint32_t* target = pixel(frame, destinationX + x, 32 + destinationY + y);
-            if (target) *target = (*target & mask) | source;
+    for (int y = firstY; y < lastY; ++y) {
+        const int sourceRow = (sourceY + y) * static_cast<int>(sourceStride);
+        const int maskRow = (sourceY + y) * static_cast<int>(sourceStride);
+        const int destinationRow = (destinationTop + y) * kPacManWidth;
+        const uint32_t* sourcePixels = sprites->pixels + sourceRow + sourceX + firstX;
+        const uint32_t* maskPixels = sprites->pixels + maskRow + maskX + firstX;
+        uint32_t* destinationPixels = frame + destinationRow + destinationX + firstX;
+        for (int x = firstX; x < lastX; ++x) {
+            const int column = x - firstX;
+            destinationPixels[column] = (destinationPixels[column] & maskPixels[column]) |
+                                        sourcePixels[column];
         }
     }
 }

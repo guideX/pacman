@@ -25,6 +25,9 @@ set(GUIDEXOS_LLD "C:/Program Files/LLVM/bin/ld.lld.exe" CACHE FILEPATH "LLVM lld
 # The SysV red zone is therefore not safe unless interrupt entry switches to a
 # separate stack.  guideXOS currently does not make that switch, so every
 # freestanding amd64 Native ELF object must be compiled without the red zone.
+# Keep Native ELF objects on their established compiler mode until loader and
+# runtime support for optimized compiler output is corrected; PST3 experiments
+# faulted before the first rendered frame.
 set(GUIDEXOS_NATIVE_CXX_FLAGS -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -mno-red-zone)
 # Gameplay diagnostics call the Native ELF host log ABI.  Keep them opt-in for
 # production: the bare-metal serial backend is synchronous, so per-update

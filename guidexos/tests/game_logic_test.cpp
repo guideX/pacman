@@ -1637,6 +1637,13 @@ bool test_final_power_pill_and_renderer() {
             spritePixels[y * 256 + x] = 0x00778899u;
         }
     }
+    const int pacmanSourceX = static_cast<int>(Direction::Right) * kPacManSpriteSize;
+    for (int y = 0; y < kPacManSpriteSize; ++y) {
+        for (int x = 0; x < kPacManSpriteSize; ++x) {
+            spritePixels[(160 + y) * 256 + pacmanSourceX + x] = 0x000A0B0Cu;
+            spritePixels[(160 + y) * 256 + pacmanSourceX + 128 + x] = 0xFFFFFFFFu;
+        }
+    }
     game_initialize(&game);
     game.pacman.facingDirection = Direction::None;
     game.ghosts[0].x = 100;
@@ -1662,6 +1669,14 @@ bool test_final_power_pill_and_renderer() {
                       kPacManWidth * kPacManFrameHeight);
     ok &= expect(framePixels[(32 + 100) * kPacManWidth + 100] == 0x00445566u,
                  "eaten ghosts use the historical eyes sprite and mask");
+    game.pacman.x = 8;
+    game.pacman.y = -24;
+    game.pacman.facingDirection = Direction::Right;
+    game.pacman.mouth = 1;
+    render_game_scene(&sprites, &game, backgroundPixels, framePixels,
+                      kPacManWidth * kPacManFrameHeight);
+    ok &= expect(framePixels[0] == 0x000A0B0Cu,
+                 "renderer clips a partially off-screen Pac-Man sprite at the top-left corner");
     return ok;
 }
 
