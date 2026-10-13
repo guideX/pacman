@@ -34,10 +34,10 @@ $BuildRoot = Join-Path $ArtifactRoot 'build-production'
 $NativeRoot = Join-Path $ArtifactRoot 'native-production'
 
 cmake -S (Join-Path $RepoRoot 'guidexos') -B $BuildRoot -G Ninja `
-  -DGUIDEXOS_SERVER_ROOT=$ServerRoot `
-  -DGUIDEXOS_PACKAGE_ROOT=$PackageRoot `
-  -DGUIDEXOS_LOCAL_BIN_DIR=$NativeRoot `
-  -DPACMAN_ENABLE_DIAGNOSTICS=OFF
+  "-DGUIDEXOS_SERVER_ROOT:PATH=$ServerRoot" `
+  "-DGUIDEXOS_PACKAGE_ROOT:PATH=$PackageRoot" `
+  "-DGUIDEXOS_LOCAL_BIN_DIR:PATH=$NativeRoot" `
+  -DPACMAN_ENABLE_DIAGNOSTICS:BOOL=OFF
 cmake --build $BuildRoot --target pacman-native
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
